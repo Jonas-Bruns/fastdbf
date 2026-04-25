@@ -1,0 +1,21 @@
+[package]
+name = "fastdbf"
+version = "0.1.0"
+edition = "2021"
+description = "Fast DBF reader/writer with Python bindings"
+
+# cdylib  = Python extension (.so / .pyd)
+# rlib    = allows `cargo test` to work
+[lib]
+name = "fastdbf"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module"] }
+
+[profile.release]
+# Smaller binary, faster import
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

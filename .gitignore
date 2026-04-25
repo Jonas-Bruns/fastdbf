@@ -1,0 +1,14 @@
+target/
+dist/
+build/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+python-module/
+*.dbf
+*.dbt
+*.fpt
+dbf_output/
