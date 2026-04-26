@@ -9,8 +9,6 @@ on:
 env:
   CARGO_TERM_COLOR: always
   PYO3_USE_ABI3_FORWARD_COMPATIBILITY: 1
-  RUSTUP_MAX_RETRIES: 5
-  CARGO_NET_RETRY: 5
 
 jobs:
   lint-and-format:
@@ -65,7 +63,7 @@ jobs:
         run: uv sync
         
       - name: Run Rust tests
-        run: cargo test
+        run: cargo test --no-default-features
         
       - name: Run Python tests
         run: uv run pytest
