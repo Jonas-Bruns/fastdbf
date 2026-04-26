@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+env:
+  RUSTUP_MAX_RETRIES: 5
+  CARGO_NET_RETRY: 5
+
 jobs:
   linux:
     runs-on: ubuntu-latest
