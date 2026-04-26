@@ -162,9 +162,7 @@ impl PyRecord {
             .iter()
             .map(|v| value_to_py(py, v, self.encoding))
             .collect::<PyResult<_>>()?;
-        Ok(PyList::new(py, items)?
-            .call_method0("__iter__")?
-            .unbind())
+        Ok(PyList::new(py, items)?.call_method0("__iter__")?.unbind())
     }
 
     // ── Attribute access (record.fieldname) ─────────────────────────

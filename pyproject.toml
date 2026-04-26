@@ -7,7 +7,7 @@ name = "fastdbf"
 version = "0.1.0"
 description = "A Python package for reading and writing DBF files, powered by a Rust core"
 authors = [{ name = "Jonas Bruns" }]
-requires-python = ">=3.8"
+requires-python = ">=3.11"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 keywords = ["dbf", "dbase", "foxpro", "visual-foxpro", "rust", "python"]
@@ -17,9 +17,6 @@ classifiers = [
   "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.8",
-  "Programming Language :: Python :: 3.9",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
@@ -48,7 +45,7 @@ default-groups = ["dev"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py38"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]

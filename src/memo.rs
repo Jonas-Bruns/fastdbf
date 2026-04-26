@@ -226,8 +226,7 @@ impl MemoFile {
                 if remainder < BLOCK_SIZE as usize {
                     self.file.write_all(&vec![0u8; remainder])?;
                 }
-                let blocks_used =
-                    (content.len() + 2).div_ceil(BLOCK_SIZE as usize) as u32;
+                let blocks_used = (content.len() + 2).div_ceil(BLOCK_SIZE as usize) as u32;
                 self.next_free_block += blocks_used;
             }
             MemoFormat::DBase4 => {
