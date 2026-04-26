@@ -1,6 +1,6 @@
 [package]
 name = "fastdbf"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Jonas Bruns"]
 description = "Fast DBF reader/writer with Python bindings"
@@ -13,7 +13,7 @@ name = "fastdbf"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-pyo3 = { version = "0.23" }
+pyo3 = { version = "0.23", features = ["abi3-py311"] }
 encoding_rs = "0.8"
 
 [features]
