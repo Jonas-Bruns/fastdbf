@@ -57,11 +57,33 @@ def test_create_table_helper_and_structure(tmp_path: Path) -> None:
     table.close()
 
 
-def test_module_helpers(tmp_path: Path) -> None:
-    csv_path = tmp_path / "sample.csv"
-    csv_path.write_text("Alice,10\nBob,20\n", encoding="utf-8")
-    table = fastdbf.from_csv(str(csv_path), dbf_type="db3")
+def test_memo_read_write(tmp_path: Path) -> None:
+    path = tmp_path / "memos.dbf"
+    table = fastdbf.Table(
+        str(path),
+        "id N(3,0); notes M null",
+        on_disk=False,
+        dbf_type="vfp",
+    )
     table.open()
-    assert fastdbf.field_names(table) == ["F0", "F1"]
-    assert len(table.records()) == 2
+    table.append(
+        {"ID": 1, "NOTES": "This is a very long memo text that will go into the FPT file!"}
+    )
+    table.append({"ID": 2, "NOTES": None})
+    table.append({"ID": 3, "NOTES": "Another note."})
+    table.write(str(path))
     table.close()
+
+    # Verify the companion file exists
+    fpt_path = tmp_path / "memos.fpt"
+    assert fpt_path.exists()
+
+    reopened = fastdbf.Table(str(path))
+    reopened.open()
+    assert reopened.record_count == 3
+    assert (
+        reopened.row(0)["NOTES"] == "This is a very long memo text that will go into the FPT file!"
+    )
+    assert reopened.row(1)["NOTES"] is None
+    assert reopened.row(2)["NOTES"] == "Another note."
+    reopened.close()

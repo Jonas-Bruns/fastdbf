@@ -87,21 +87,6 @@ names = fastdbf.field_names(table)
 print(names)
 ```
 
-### `fastdbf.from_csv(csvfile, to_disk=False, filename=None, field_names=None, dbf_type="db3")`
-
-Create a table from a simple CSV file.
-
-Current behavior:
-
-- all imported columns are created as character fields
-- column names come from `field_names` if provided, otherwise generated names such as `F0`, `F1`, ...
-
-Example:
-
-```python
-table = fastdbf.from_csv("input.csv", dbf_type="db3")
-table.write("from_csv.dbf")
-```
 
 ### `fastdbf.table_type(path)`
 

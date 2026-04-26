@@ -1,12 +1,12 @@
 """
-Benchmark: fastdbf vs dbf vs DbfDataFrame
+Benchmark: fastdbf vs dbf
 =========================================
-Vergleicht Lese- und Schreibgeschwindigkeit aller drei Zugangswege.
+Compares read and write speeds of both libraries.
 
-Voraussetzungen:
-    uv pip install dbf pandas fastdbf
+Prerequisites:
+    uv add dbf fastdbf matplotlib seaborn --dev
 
-Aufruf:
+Usage:
     uv run python benchmark.py
     uv run python benchmark.py --rows 50000
 """
@@ -18,40 +18,42 @@ import string
 import tempfile
 import time
 from dataclasses import dataclass
-from typing import Callable
 
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # ---------------------------------------------------------------------------
-# Hilfsfunktionen
+# Helpers
 # ---------------------------------------------------------------------------
+
 
 def random_name(length: int = 10) -> str:
     return "".join(random.choices(string.ascii_letters, k=length))
 
 
 def random_date_str() -> str:
-    year  = random.randint(1950, 2024)
+    year = random.randint(1950, 2024)
     month = random.randint(1, 12)
-    day   = random.randint(1, 28)
+    day = random.randint(1, 28)
     return f"{year:04d}{month:02d}{day:02d}"
 
 
 def random_date_iso() -> str:
-    year  = random.randint(1950, 2024)
+    year = random.randint(1950, 2024)
     month = random.randint(1, 12)
-    day   = random.randint(1, 28)
+    day = random.randint(1, 28)
     return f"{year:04d}-{month:02d}-{day:02d}"
 
 
 def make_rows(n: int) -> list[dict]:
-    """Erzeugt n Zeilen mit gemischten Typen."""
+    """Generates n rows with mixed data types."""
     return [
         {
-            "NAME":    random_name(10),
-            "AGE":     random.randint(18, 90),
-            "SCORE":   round(random.uniform(0.0, 100.0), 2),
-            "ACTIVE":  random.choice([True, False]),
-            "BIRTH":   random_date_iso(),
+            "NAME": random_name(10),
+            "AGE": random.randint(18, 90),
+            "SCORE": round(random.uniform(0.0, 100.0), 2),
+            "ACTIVE": random.choice([True, False]),
+            "BIRTH": random_date_iso(),
         }
         for _ in range(n)
     ]
@@ -59,10 +61,10 @@ def make_rows(n: int) -> list[dict]:
 
 @dataclass
 class Result:
-    label:           str
-    write_s:         float
-    read_s:          float
-    row_count:       int
+    label: str
+    write_s: float
+    read_s: float
+    row_count: int
     file_size_bytes: int = 0
 
     @property
@@ -83,8 +85,10 @@ def fmt_size(n: int) -> str:
 
 
 def estimate_csv_size(rows: list[dict]) -> int:
-    """Schätzt die CSV-Größe anhand der tatsächlichen Daten."""
-    import io, csv
+    """Estimates the CSV file size based on actual data."""
+    import csv
+    import io
+
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=rows[0].keys())
     writer.writeheader()
@@ -95,6 +99,7 @@ def estimate_csv_size(rows: list[dict]) -> int:
 # ---------------------------------------------------------------------------
 # fastdbf
 # ---------------------------------------------------------------------------
+
 
 def bench_fastdbf_write(rows: list[dict], path: str) -> float:
     import fastdbf
@@ -123,8 +128,9 @@ def bench_fastdbf_read(path: str) -> tuple[float, int]:
 
 
 # ---------------------------------------------------------------------------
-# dbf (pure-Python Referenzimplementierung)
+# dbf (pure-Python reference implementation)
 # ---------------------------------------------------------------------------
+
 
 def bench_dbf_write(rows: list[dict], path: str) -> float:
     import dbf
@@ -138,13 +144,15 @@ def bench_dbf_write(rows: list[dict], path: str) -> float:
     start = time.perf_counter()
     for row in rows:
         ymd = row["BIRTH"].replace("-", "")
-        table.append({
-            "name":   row["NAME"],
-            "age":    row["AGE"],
-            "score":  row["SCORE"],
-            "active": row["ACTIVE"],
-            "birth":  dbf.Date.fromymd(ymd),
-        })
+        table.append(
+            {
+                "name": row["NAME"],
+                "age": row["AGE"],
+                "score": row["SCORE"],
+                "active": row["ACTIVE"],
+                "birth": dbf.Date.fromymd(ymd),
+            }
+        )
     table.close()
     return time.perf_counter() - start
 
@@ -163,52 +171,16 @@ def bench_dbf_read(path: str) -> tuple[float, int]:
 
 
 # ---------------------------------------------------------------------------
-# DbfDataFrame (fastdbf + pandas)
-# ---------------------------------------------------------------------------
-
-def make_dataframe(rows: list[dict]) -> "pd.DataFrame":
-    import pandas as pd
-    return pd.DataFrame(rows)
-
-
-def bench_ddf_write(rows: list[dict], path: str) -> float:
-    import pandas as pd
-    from fastdbf.pandas_bridge import DbfDataFrame
-
-    df = pd.DataFrame(rows)
-    # BIRTH ist ein ISO-String – als Character-Feld speichern,
-    # da fastdbf Date-Felder noch keinen direkten pd.Timestamp-Support haben
-    ddf = DbfDataFrame.from_dataframe(
-        df,
-        dbf_type="db3",
-        field_specs={"BIRTH": "C(10)"},
-    )
-    start = time.perf_counter()
-    ddf.to_dbf(path)
-    return time.perf_counter() - start
-
-
-def bench_ddf_read(path: str) -> tuple[float, int]:
-    from fastdbf.pandas_bridge import DbfDataFrame
-
-    start = time.perf_counter()
-    ddf = DbfDataFrame.from_dbf(path, dbf_type="db3")
-    count = len(ddf.data)
-    elapsed = time.perf_counter() - start
-    return elapsed, count
-
-
-# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
+
 
 def run_benchmark(rows: list[dict], warmup: bool = True) -> list[Result]:
     results = []
 
     benches = [
-        ("fastdbf",    bench_fastdbf_write, bench_fastdbf_read),
-        ("dbf",        bench_dbf_write,     bench_dbf_read),
-        ("DbfDataFrame", bench_ddf_write,   bench_ddf_read),
+        ("fastdbf", bench_fastdbf_write, bench_fastdbf_read),
+        ("dbf", bench_dbf_write, bench_dbf_read),
     ]
 
     for label, write_fn, read_fn in benches:
@@ -216,7 +188,6 @@ def run_benchmark(rows: list[dict], warmup: bool = True) -> list[Result]:
             path = f.name
 
         try:
-            # optionaler Warmup-Lauf (nicht gemessen)
             if warmup:
                 write_fn(rows[:100], path)
                 read_fn(path)
@@ -226,9 +197,9 @@ def run_benchmark(rows: list[dict], warmup: bool = True) -> list[Result]:
             read_s, count = read_fn(path)
             results.append(Result(label, write_s, read_s, count, file_size))
         except ImportError as exc:
-            print(f"  [{label}] nicht installiert – übersprungen ({exc})")
+            print(f"  [{label}] not installed - skipping ({exc})")
         except Exception as exc:
-            print(f"  [{label}] Fehler: {exc}")
+            print(f"  [{label}] error: {exc}")
         finally:
             try:
                 os.unlink(path)
@@ -239,16 +210,43 @@ def run_benchmark(rows: list[dict], warmup: bool = True) -> list[Result]:
 
 
 # ---------------------------------------------------------------------------
-# Ausgabe
+# Output & Plotting
 # ---------------------------------------------------------------------------
+
+
+def plot_results(results: list[Result], filename="benchmark.png"):
+    labels = [r.label for r in results]
+    read_times = [r.read_s for r in results]
+    write_times = [r.write_s for r in results]
+
+    sns.set_theme(style="whitegrid")
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    x = range(len(labels))
+    width = 0.35
+
+    ax.bar([i - width / 2 for i in x], write_times, width, label="Write Time (s)", color="salmon")
+    ax.bar([i + width / 2 for i in x], read_times, width, label="Read Time (s)", color="skyblue")
+
+    ax.set_ylabel("Time (Seconds)")
+    ax.set_title(f"Performance Comparison ({results[0].row_count:,} rows)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.legend()
+
+    plt.tight_layout()
+    plt.savefig(filename, dpi=300)
+    print(f"Plot saved to {filename}")
+
 
 def print_results(results: list[Result], rows: list[dict]) -> None:
     csv_size = estimate_csv_size(rows)
 
     col = 14
     header = (
-        f"{'Paket':<{col}}  {'Schreiben':>12}  {'Lesen':>12}"
-        f"  {'W kRows/s':>10}  {'R kRows/s':>10}  {'Dateigröße':>12}  {'vs CSV':>8}"
+        f"{'Package':<{col}}  {'Write':>12}  {'Read':>12}"
+        f"  {'W kRows/s':>10}  {'R kRows/s':>10}  {'File Size':>12}  {'vs CSV':>8}"
     )
     print()
     print(header)
@@ -266,57 +264,62 @@ def print_results(results: list[Result], rows: list[dict]) -> None:
         )
 
     print(
-        f"{'CSV (geschätzt)':<{col}}  {'':>12}  {'':>12}"
+        f"{'CSV (est.)':<{col}}  {'':>12}  {'':>12}"
         f"  {'':>10}  {'':>10}  {fmt_size(csv_size):>12}  {'100.0%':>8}"
     )
     print()
 
-    # Vergleich: alle anderen vs fastdbf (erster Eintrag)
+    # Comparison: all others vs fastdbf (first entry)
     baseline = results[0]
     for other in results[1:]:
         w_factor = other.write_s / baseline.write_s
-        r_factor = other.read_s  / baseline.read_s
-        faster_w = "schneller" if w_factor > 1 else "langsamer"
-        faster_r = "schneller" if r_factor > 1 else "langsamer"
+        r_factor = other.read_s / baseline.read_s
+        faster_w = "faster" if w_factor > 1 else "slower"
+        faster_r = "faster" if r_factor > 1 else "slower"
         print(
-            f"{baseline.label} ist beim Schreiben "
-            f"{max(w_factor, 1/w_factor):.1f}x {faster_w} als {other.label}"
+            f"{baseline.label} is "
+            f"{max(w_factor, 1 / w_factor):.1f}x {faster_w} than {other.label} at writing."
         )
         print(
-            f"{baseline.label} ist beim Lesen "
-            f"{max(r_factor, 1/r_factor):.1f}x {faster_r} als {other.label}"
+            f"{baseline.label} is "
+            f"{max(r_factor, 1 / r_factor):.1f}x {faster_r} than {other.label} at reading."
         )
         if baseline.file_size_bytes and other.file_size_bytes:
             s_factor = other.file_size_bytes / baseline.file_size_bytes
             print(
-                f"{baseline.label}-Datei ist {max(s_factor, 1/s_factor):.1f}x "
-                f"{'groesser' if s_factor > 1 else 'kleiner'} als {other.label}-Datei"
+                f"{baseline.label} file is {max(s_factor, 1 / s_factor):.1f}x "
+                f"{'larger' if s_factor > 1 else 'smaller'} than {other.label} file."
             )
         print()
 
 
 # ---------------------------------------------------------------------------
-# Einstiegspunkt
+# Entry Point
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="fastdbf vs dbf Benchmark")
     parser.add_argument(
-        "--rows", type=int, default=10_000,
-        help="Anzahl der Zeilen (Standard: 10000)",
+        "--rows",
+        type=int,
+        default=100_000,
+        help="Number of rows (default: 100000)",
     )
     parser.add_argument(
-        "--no-warmup", action="store_true",
-        help="Warmup-Lauf überspringen",
+        "--no-warmup",
+        action="store_true",
+        help="Skip warmup run",
     )
     args = parser.parse_args()
 
-    print(f"Generiere {args.rows:,} Zeilen …")
+    print(f"Generating {args.rows:,} rows...")
     rows = make_rows(args.rows)
 
-    print(f"Starte Benchmark (warmup={'nein' if args.no_warmup else 'ja'}) …")
+    print(f"Starting benchmark (warmup={'no' if args.no_warmup else 'yes'})...")
     results = run_benchmark(rows, warmup=not args.no_warmup)
     print_results(results, rows)
+    plot_results(results)
 
 
 if __name__ == "__main__":

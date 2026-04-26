@@ -2,12 +2,16 @@ use pyo3::exceptions::{PyIOError, PyKeyError, PyRuntimeError, PyTypeError, PyVal
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
+use crate::codepage;
 use crate::header::FieldDescriptor;
 use crate::record::Record;
 use crate::table::{Table, CLOSED, IN_MEMORY, ON_DISK, READ_ONLY, READ_WRITE};
 use crate::value::{Date, DateTime, Value};
 
-/// Status values exposed to Python as `fastdbf.TableStatus`.
+// ─────────────────────────────────────────────────────────────────────────────
+// TableStatus / TableLocation enums (unchanged)
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[pyclass(eq, eq_int, name = "TableStatus")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableStatus {
@@ -35,7 +39,6 @@ impl TableStatus {
     }
 }
 
-/// Location values exposed to Python as `fastdbf.TableLocation`.
 #[pyclass(eq, eq_int, name = "TableLocation")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableLocation {
@@ -60,12 +63,230 @@ impl TableLocation {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PyRecord – record object with attribute access + `with` protocol
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A single DBF record exposed to Python.
+///
+/// Supports dict-style access (`record["NAME"]`), attribute access
+/// (`record.name`), sequence access (`record[0]`), iteration, and the
+/// `with` context-manager protocol (changes are written back to the
+/// parent table on `__exit__`).
+#[pyclass(name = "Record")]
+pub struct PyRecord {
+    /// A clone of the record's current values.
+    record: Record,
+    /// Snapshot of the field descriptors at the time the record was created.
+    fields: Vec<FieldDescriptor>,
+    /// Encoding for Character fields (may be None = UTF-8 / bytes-as-is).
+    encoding: Option<&'static encoding_rs::Encoding>,
+    /// Whether this record is currently inside a `with` block.
+    in_context: bool,
+    /// Pending mutations to apply on `__exit__`.
+    pending: Vec<(String, Value)>,
+}
+
+#[pymethods]
+impl PyRecord {
+    // ── Sequence protocol ────────────────────────────────────────────
+
+    fn __len__(&self) -> usize {
+        self.fields.len()
+    }
+
+    fn __getitem__<'py>(&self, py: Python<'py>, key: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+        // Support both integer indices and string keys.
+        if let Ok(index) = key.extract::<isize>() {
+            let len = self.fields.len() as isize;
+            let real_index = if index < 0 { len + index } else { index };
+            if real_index < 0 || real_index >= len {
+                return Err(PyKeyError::new_err(format!(
+                    "record index out of range: {index}"
+                )));
+            }
+            value_to_py(
+                py,
+                &self.record.values()[real_index as usize],
+                self.encoding,
+            )
+        } else {
+            let name = key.extract::<String>()?;
+            let normalized = name.trim().to_ascii_uppercase();
+            let (idx, _) = self
+                .fields
+                .iter()
+                .enumerate()
+                .find(|(_, f)| f.name == normalized)
+                .ok_or_else(|| PyKeyError::new_err(format!("field not found: {normalized}")))?;
+            value_to_py(py, &self.record.values()[idx], self.encoding)
+        }
+    }
+
+    fn __setitem__(&mut self, key: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let name = if let Ok(index) = key.extract::<isize>() {
+            let len = self.fields.len() as isize;
+            let real = if index < 0 { len + index } else { index };
+            if real < 0 || real >= len {
+                return Err(PyKeyError::new_err(format!(
+                    "record index out of range: {index}"
+                )));
+            }
+            self.fields[real as usize].name.clone()
+        } else {
+            key.extract::<String>()?.trim().to_ascii_uppercase()
+        };
+
+        let field = self
+            .fields
+            .iter()
+            .find(|f| f.name == name)
+            .ok_or_else(|| PyKeyError::new_err(format!("field not found: {name}")))?;
+
+        let v = py_to_value_with_encoding(value, field, self.encoding)?;
+        if self.in_context {
+            // Defer until __exit__.
+            self.pending.push((name, v));
+        } else {
+            self.record
+                .insert(&self.fields, field.name.as_str(), v)
+                .map_err(to_py_error)?;
+        }
+        Ok(())
+    }
+
+    fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+        let items: Vec<PyObject> = self
+            .record
+            .values()
+            .iter()
+            .map(|v| value_to_py(py, v, self.encoding))
+            .collect::<PyResult<_>>()?;
+        Ok(PyList::new(py, items)?
+            .call_method0("__iter__")?
+            .unbind())
+    }
+
+    // ── Attribute access (record.fieldname) ─────────────────────────
+
+    fn __getattr__<'py>(&self, py: Python<'py>, name: &str) -> PyResult<PyObject> {
+        let upper = name.to_ascii_uppercase();
+        if let Some((idx, _)) = self
+            .fields
+            .iter()
+            .enumerate()
+            .find(|(_, f)| f.name == upper)
+        {
+            return value_to_py(py, &self.record.values()[idx], self.encoding);
+        }
+        // Fall back to normal attribute lookup.
+        Err(pyo3::exceptions::PyAttributeError::new_err(format!(
+            "no attribute or field named {name:?}"
+        )))
+    }
+
+    fn __setattr__(&mut self, name: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let upper = name.to_ascii_uppercase();
+        if let Some(field) = self.fields.iter().find(|f| f.name == upper) {
+            let v = py_to_value_with_encoding(value, field, self.encoding)?;
+            if self.in_context {
+                self.pending.push((upper, v));
+            } else {
+                self.record
+                    .insert(&self.fields, field.name.as_str(), v)
+                    .map_err(to_py_error)?;
+            }
+            return Ok(());
+        }
+        // Allow normal Python attribute setting for non-field names.
+        Err(pyo3::exceptions::PyAttributeError::new_err(format!(
+            "no field named {name:?}; use record[\"{name}\"] to set a non-field attribute"
+        )))
+    }
+
+    // ── Context-manager protocol (`with record: ...`) ────────────────
+
+    fn __enter__(mut slf: PyRefMut<'_, Self>) -> PyRefMut<'_, Self> {
+        slf.in_context = true;
+        slf.pending.clear();
+        slf
+    }
+
+    fn __exit__(
+        &mut self,
+        _exc_type: &Bound<'_, PyAny>,
+        _exc_val: &Bound<'_, PyAny>,
+        _exc_tb: &Bound<'_, PyAny>,
+    ) -> PyResult<bool> {
+        self.in_context = false;
+        // Apply all pending mutations.
+        for (name, value) in self.pending.drain(..) {
+            self.record
+                .insert(&self.fields, &name, value)
+                .map_err(to_py_error)?;
+        }
+        Ok(false) // do not suppress exceptions
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────
+
+    #[getter]
+    fn deleted(&self) -> bool {
+        self.record.is_deleted()
+    }
+
+    #[setter]
+    fn set_deleted(&mut self, value: bool) {
+        self.record.set_deleted(value);
+    }
+
+    fn as_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        record_to_dict(py, &self.fields, &self.record, self.encoding)
+    }
+
+    fn keys(&self) -> Vec<String> {
+        self.fields.iter().map(|f| f.name.clone()).collect()
+    }
+
+    fn values<'py>(&self, py: Python<'py>) -> PyResult<Vec<PyObject>> {
+        self.record
+            .values()
+            .iter()
+            .map(|v| value_to_py(py, v, self.encoding))
+            .collect()
+    }
+
+    fn items<'py>(&self, py: Python<'py>) -> PyResult<Vec<(String, PyObject)>> {
+        self.fields
+            .iter()
+            .zip(self.record.values())
+            .map(|(f, v)| Ok((f.name.clone(), value_to_py(py, v, self.encoding)?)))
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        let pairs: Vec<String> = self
+            .fields
+            .iter()
+            .zip(self.record.values())
+            .map(|(f, v)| format!("{}={:?}", f.name, v))
+            .collect();
+        format!("Record({})", pairs.join(", "))
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PyTable
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[pyclass(name = "Table")]
 pub struct PyTable {
     inner: Table,
     default_filename: Option<String>,
     on_disk: bool,
     status: TableStatus,
+    /// Resolved encoding from the `codepage` parameter or the DBF header mark.
+    encoding: Option<&'static encoding_rs::Encoding>,
 }
 
 #[pymethods]
@@ -79,26 +300,52 @@ impl PyTable {
         dbf_type: Option<String>,
         codepage: Option<String>,
     ) -> PyResult<Self> {
-        if codepage.is_some() {
-            return Err(PyValueError::new_err(
-                "the 'codepage' parameter is not yet supported; omit it or file a feature request",
-            ));
-        }
+        // Resolve encoding from the explicit `codepage` parameter.
+        let explicit_encoding = match &codepage {
+            Some(name) => {
+                // Accept both a name like "cp1252" or an integer-string like "0xC8" / "200".
+                if let Ok(num) = u8::from_str_radix(name.trim_start_matches("0x"), 16)
+                    .or_else(|_| name.trim().parse::<u8>())
+                {
+                    codepage::encoding_for_mark(num)
+                } else {
+                    let mark = codepage::mark_for_name(name).ok_or_else(|| {
+                        PyValueError::new_err(format!(
+                            "unknown codepage {name:?}; use e.g. 'cp1252', 'windows-1251', or the numeric mark byte"
+                        ))
+                    })?;
+                    codepage::encoding_for_mark(mark)
+                }
+            }
+            None => None,
+        };
+
         let inner = match field_specs {
             Some(specs) => {
                 let kind = dbf_type_to_kind(dbf_type.as_deref())?;
-                Table::from_specs(crate::spec::FieldSpec::parse_many(&specs).map_err(to_py_error)?, kind)
-                    .map_err(to_py_error)?
+                Table::from_specs(
+                    crate::spec::FieldSpec::parse_many(&specs).map_err(to_py_error)?,
+                    kind,
+                )
+                .map_err(to_py_error)?
             }
             None => Table::open(&filename).map_err(to_py_error)?,
         };
+
+        // If no explicit encoding was given, fall back to what's in the DBF header.
+        let encoding =
+            explicit_encoding.or_else(|| codepage::encoding_for_mark(inner.header().code_page.0));
+
         Ok(Self {
             inner,
             default_filename: Some(filename),
             on_disk,
             status: TableStatus::Closed,
+            encoding,
         })
     }
+
+    // ── Existing getters (unchanged) ──────────────────────────────────
 
     #[getter]
     fn kind(&self) -> String {
@@ -138,13 +385,43 @@ impl PyTable {
         }
     }
 
+    /// Return the active encoding label (e.g. `"CP1252"`) or `None` if
+    /// the file has no code-page mark and no explicit encoding was given.
+    #[getter]
+    fn codepage(&self) -> Option<String> {
+        self.encoding.map(|enc| enc.name().to_string())
+    }
+
+    // ── Records access ────────────────────────────────────────────────
+
     fn records<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         self.require_open()?;
         let items = self
             .inner
             .records()
             .iter()
-            .map(|record| record_to_dict(py, self.inner.fields(), record))
+            .map(|record| record_to_dict(py, self.inner.fields(), record, self.encoding))
+            .collect::<PyResult<Vec<_>>>()?;
+        PyList::new(py, items)
+    }
+
+    /// Like `records()` but returns `PyRecord` objects with attribute access.
+    fn record_objects<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        self.require_open()?;
+        let items = self
+            .inner
+            .records()
+            .iter()
+            .map(|record| {
+                let py_record = PyRecord {
+                    record: record.clone(),
+                    fields: self.inner.fields().to_vec(),
+                    encoding: self.encoding,
+                    in_context: false,
+                    pending: Vec::new(),
+                };
+                Py::new(py, py_record)
+            })
             .collect::<PyResult<Vec<_>>>()?;
         PyList::new(py, items)
     }
@@ -162,13 +439,33 @@ impl PyTable {
 
     fn row<'py>(&self, py: Python<'py>, index: usize) -> PyResult<Bound<'py, PyDict>> {
         self.require_open()?;
-        let record = self
-            .inner
-            .records()
-            .get(index)
-            .ok_or_else(|| PyKeyError::new_err(format!("record index out of range: {index}")))?;
-        record_to_dict(py, self.inner.fields(), record)
+        let record =
+            self.inner.records().get(index).ok_or_else(|| {
+                PyKeyError::new_err(format!("record index out of range: {index}"))
+            })?;
+        record_to_dict(py, self.inner.fields(), record, self.encoding)
     }
+
+    /// Return a single record as a `PyRecord` object.
+    fn record<'py>(&self, py: Python<'py>, index: usize) -> PyResult<Py<PyRecord>> {
+        self.require_open()?;
+        let record =
+            self.inner.records().get(index).ok_or_else(|| {
+                PyKeyError::new_err(format!("record index out of range: {index}"))
+            })?;
+        Py::new(
+            py,
+            PyRecord {
+                record: record.clone(),
+                fields: self.inner.fields().to_vec(),
+                encoding: self.encoding,
+                in_context: false,
+                pending: Vec::new(),
+            },
+        )
+    }
+
+    // ── Writing ───────────────────────────────────────────────────────
 
     fn append(&mut self, row: &Bound<'_, PyAny>) -> PyResult<()> {
         self.require_read_write()?;
@@ -176,7 +473,8 @@ impl PyTable {
         if let Ok(dict) = row.downcast::<PyDict>() {
             for field in self.inner.fields() {
                 if let Some(value) = dict.get_item(field.name.as_str())? {
-                    let converted = py_to_value(value.as_any(), field)?;
+                    let converted =
+                        py_to_value_with_encoding(value.as_any(), field, self.encoding)?;
                     record
                         .insert(self.inner.fields(), &field.name, converted)
                         .map_err(to_py_error)?;
@@ -192,18 +490,67 @@ impl PyTable {
             }
             Python::with_gil(|py| -> PyResult<()> {
                 for (field, value) in self.inner.fields().iter().zip(sequence.iter()) {
-                    let converted = py_to_value(value.bind(py), field)?;
+                    let converted =
+                        py_to_value_with_encoding(value.bind(py), field, self.encoding)?;
                     record
                         .insert(self.inner.fields(), &field.name, converted)
                         .map_err(to_py_error)?;
                 }
                 Ok(())
             })?;
+        } else if let Ok(py_record) = row.extract::<PyRef<'_, PyRecord>>() {
+            // Accept a PyRecord directly (e.g. copying between tables).
+            record = py_record.record.clone();
         } else {
-            return Err(PyTypeError::new_err("append expects a dict or a sequence"));
+            return Err(PyTypeError::new_err(
+                "append expects a dict, a sequence, or a Record object",
+            ));
         }
         self.inner.push_record(record).map_err(to_py_error)
     }
+
+    // ── pack() ────────────────────────────────────────────────────────
+
+    /// Remove all records that are marked as deleted.  Call `write()` or
+    /// close the table to persist the change.
+    fn pack(&mut self) -> PyResult<()> {
+        self.require_read_write()?;
+        self.inner.pack();
+        Ok(())
+    }
+
+    // ── Schema modification ───────────────────────────────────────────
+
+    /// Add one or more fields to the table.
+    ///
+    /// ```python
+    /// table.add_fields("score N(6,2); notes M")
+    /// ```
+    fn add_fields(&mut self, specs: &str) -> PyResult<()> {
+        self.require_read_write()?;
+        self.inner.add_fields(specs).map_err(to_py_error)
+    }
+
+    /// Remove one or more fields by name.
+    ///
+    /// ```python
+    /// table.remove_fields(["SCORE", "NOTES"])
+    /// ```
+    fn remove_fields(&mut self, names: Vec<String>) -> PyResult<()> {
+        self.require_read_write()?;
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        self.inner.remove_fields(&refs).map_err(to_py_error)
+    }
+
+    /// Rename a field (case-insensitive).
+    fn rename_field(&mut self, old_name: &str, new_name: &str) -> PyResult<()> {
+        self.require_read_write()?;
+        self.inner
+            .rename_field(old_name, new_name)
+            .map_err(to_py_error)
+    }
+
+    // ── Open / close ──────────────────────────────────────────────────
 
     #[pyo3(signature = (mode=None))]
     fn open(&mut self, mode: Option<&str>) {
@@ -229,12 +576,33 @@ impl PyTable {
         self.inner.write_to_path(path).map_err(to_py_error)
     }
 
+    // ── Context manager ───────────────────────────────────────────────
+
+    fn __enter__(mut slf: PyRefMut<'_, Self>) -> PyRefMut<'_, Self> {
+        if slf.status == TableStatus::Closed {
+            slf.status = TableStatus::ReadWrite;
+        }
+        slf
+    }
+
+    fn __exit__(
+        &mut self,
+        _exc_type: &Bound<'_, PyAny>,
+        _exc_val: &Bound<'_, PyAny>,
+        _exc_tb: &Bound<'_, PyAny>,
+    ) -> PyResult<bool> {
+        self.close()?;
+        Ok(false)
+    }
+
+    // ── Sequence / mapping protocol ───────────────────────────────────
+
     fn __getitem__<'py>(&self, py: Python<'py>, index: usize) -> PyResult<Bound<'py, PyDict>> {
         self.row(py, index)
     }
 
     fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
-        Ok(self.records(py)?.call_method0("__iter__")?.unbind().into())
+        Ok(self.records(py)?.call_method0("__iter__")?.unbind())
     }
 
     fn __len__(&self) -> usize {
@@ -250,6 +618,8 @@ impl PyTable {
         )
     }
 
+    // ── new / clone ───────────────────────────────────────────────────
+
     #[pyo3(signature = (filename=":memory:", default_data_types=None, field_specs=None, on_disk=false, dbf_type=None))]
     #[pyo3(name = "new")]
     fn clone_like(
@@ -262,14 +632,17 @@ impl PyTable {
     ) -> PyResult<PyTable> {
         if default_data_types.is_some() {
             return Err(PyValueError::new_err(
-                "the 'default_data_types' parameter is not yet supported; omit it or file a feature request",
+                "the 'default_data_types' parameter is not yet supported",
             ));
         }
         let table = match field_specs {
             Some(specs) => {
                 let kind = dbf_type_to_kind(dbf_type)?;
-                Table::from_specs(crate::spec::FieldSpec::parse_many(&specs).map_err(to_py_error)?, kind)
-                    .map_err(to_py_error)?
+                Table::from_specs(
+                    crate::spec::FieldSpec::parse_many(&specs).map_err(to_py_error)?,
+                    kind,
+                )
+                .map_err(to_py_error)?
             }
             None => self
                 .inner
@@ -281,6 +654,7 @@ impl PyTable {
             default_filename: Some(filename.to_string()),
             on_disk,
             status: TableStatus::Closed,
+            encoding: self.encoding,
         })
     }
 
@@ -289,21 +663,7 @@ impl PyTable {
         match field {
             Some(name) => {
                 let info = self.inner.field_info(name).map_err(to_py_error)?;
-                let mut spec = match info.field_type {
-                    crate::header::FieldType::Character => format!("{} C({})", info.name, info.length),
-                    crate::header::FieldType::Numeric => format!("{} N({},{})", info.name, info.length, info.decimals),
-                    crate::header::FieldType::Float => format!("{} F({},{})", info.name, info.length, info.decimals),
-                    crate::header::FieldType::Date => format!("{} D", info.name),
-                    crate::header::FieldType::Logical => format!("{} L", info.name),
-                    crate::header::FieldType::Memo => format!("{} M", info.name),
-                    crate::header::FieldType::Integer => format!("{} I", info.name),
-                    crate::header::FieldType::Double => format!("{} B", info.name),
-                    crate::header::FieldType::DateTime => format!("{} T", info.name),
-                    crate::header::FieldType::Currency => format!("{} Y", info.name),
-                    crate::header::FieldType::General => format!("{} G", info.name),
-                    crate::header::FieldType::Picture => format!("{} P", info.name),
-                    crate::header::FieldType::NullFlags => format!("{} 0", info.name),
-                };
+                let mut spec = field_spec_string(info);
                 if info.is_nullable() {
                     spec.push_str(" null");
                 }
@@ -313,11 +673,8 @@ impl PyTable {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Guard helpers – not exposed to Python by name.
-    // ------------------------------------------------------------------
+    // ── Guards ────────────────────────────────────────────────────────
 
-    /// Returns `Ok(())` if the table has been opened in any mode.
     fn require_open(&self) -> PyResult<()> {
         if self.status == TableStatus::Closed {
             Err(PyRuntimeError::new_err(
@@ -328,7 +685,6 @@ impl PyTable {
         }
     }
 
-    /// Returns `Ok(())` only in ReadWrite mode.
     fn require_read_write(&self) -> PyResult<()> {
         match self.status {
             TableStatus::Closed => Err(PyRuntimeError::new_err(
@@ -342,14 +698,20 @@ impl PyTable {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Module-level functions
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[pyfunction]
 fn open_table(path: &str) -> PyResult<PyTable> {
     let table = Table::open(path).map_err(to_py_error)?;
+    let encoding = codepage::encoding_for_mark(table.header().code_page.0);
     Ok(PyTable {
         inner: table,
         default_filename: Some(path.to_string()),
         on_disk: true,
         status: TableStatus::ReadWrite,
+        encoding,
     })
 }
 
@@ -372,16 +734,18 @@ fn create_table(
         default_filename: Some(filename.to_string()),
         on_disk,
         status: TableStatus::Closed,
+        encoding: None,
     })
 }
 
 #[pyfunction]
 fn read_dbf<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyList>> {
     let table = Table::open(path).map_err(to_py_error)?;
+    let encoding = crate::codepage::encoding_for_mark(table.header().code_page.0);
     let items = table
         .records()
         .iter()
-        .map(|record| record_to_dict(py, table.fields(), record))
+        .map(|record| record_to_dict(py, table.fields(), record, encoding))
         .collect::<PyResult<Vec<_>>>()?;
     PyList::new(py, items)
 }
@@ -398,81 +762,64 @@ fn field_names(thing: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (csvfile, to_disk=false, filename=None, field_names=None, dbf_type="db3"))]
-fn from_csv(
-    csvfile: &str,
-    to_disk: bool,
-    filename: Option<&str>,
-    field_names: Option<Vec<String>>,
-    dbf_type: &str,
-) -> PyResult<PyTable> {
-    let data = std::fs::read_to_string(csvfile).map_err(|err| PyIOError::new_err(err.to_string()))?;
-    let mut rows = data
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            line.split(',')
-                .map(|cell| cell.trim().trim_matches('"').to_string())
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    let width = rows.iter().map(Vec::len).max().unwrap_or(0);
-    let names = match field_names {
-        Some(names) => names
-            .into_iter()
-            .map(|name| name.trim().to_ascii_uppercase())
-            .collect::<Vec<_>>(),
-        None => (0..width).map(|idx| format!("F{idx}")).collect::<Vec<_>>(),
-    };
-    let specs = names
-        .iter()
-        .enumerate()
-        .map(|(idx, name)| {
-            let max_len = rows
-                .iter()
-                .filter_map(|row| row.get(idx))
-                .map(|value| value.len())
-                .max()
-                .unwrap_or(1)
-                .max(1);
-            format!("{name} C({max_len})")
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
-    let output_name = filename.unwrap_or(":memory:");
-    let mut table = create_table(&specs, output_name, to_disk, Some(dbf_type))?;
-    table.open(None);
-    for row in rows.drain(..) {
-        let mut record = table.inner.new_record();
-        for (field, cell) in table.inner.fields().iter().zip(row.iter()) {
-            record
-                .insert(table.inner.fields(), &field.name, Value::Character(cell.clone()))
-                .map_err(to_py_error)?;
-        }
-        table.inner.push_record(record).map_err(to_py_error)?;
-    }
-    Ok(table)
-}
-
-#[pyfunction]
 fn table_type(path: &str) -> PyResult<(u8, String)> {
     let table = Table::open(path).map_err(to_py_error)?;
     let version = table.header().kind.version_byte();
     Ok((version, format!("{:?}", table.header().kind)))
 }
 
+/// Write back a modified `PyRecord` into a table at the given index.
+///
+/// Mirrors `dbf.write(record, field=value)` in the Python library.
+#[pyfunction]
+#[pyo3(signature = (table, index, **kwargs))]
+fn write(
+    mut table: PyRefMut<'_, PyTable>,
+    index: usize,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<()> {
+    table.require_read_write()?;
+    let encoding = table.encoding;
+    let fields = table.inner.fields().to_vec();
+    let record = table
+        .inner
+        .records_mut()
+        .get_mut(index)
+        .ok_or_else(|| PyKeyError::new_err(format!("record index out of range: {index}")))?;
+    if let Some(kwargs) = kwargs {
+        for (key, value) in kwargs.iter() {
+            let name: String = key.extract()?;
+            let upper = name.trim().to_ascii_uppercase();
+            let field = fields
+                .iter()
+                .find(|f| f.name == upper)
+                .ok_or_else(|| PyKeyError::new_err(format!("field not found: {upper}")))?
+                .clone();
+            let v = py_to_value_with_encoding(&value, &field, encoding)?;
+            record.insert(&fields, &upper, v).map_err(to_py_error)?;
+        }
+    }
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module registration
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[pymodule]
 fn fastdbf(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyTable>()?;
+    module.add_class::<PyRecord>()?;
     module.add_class::<TableStatus>()?;
     module.add_class::<TableLocation>()?;
     module.add_function(wrap_pyfunction!(open_table, module)?)?;
     module.add_function(wrap_pyfunction!(create_table, module)?)?;
     module.add_function(wrap_pyfunction!(read_dbf, module)?)?;
     module.add_function(wrap_pyfunction!(field_names, module)?)?;
-    module.add_function(wrap_pyfunction!(from_csv, module)?)?;
+
     module.add_function(wrap_pyfunction!(table_type, module)?)?;
-    // Legacy string constants – kept for backwards compatibility.
+    module.add_function(wrap_pyfunction!(write, module)?)?;
+    // Legacy string constants.
     module.add("CLOSED", CLOSED)?;
     module.add("READ_ONLY", READ_ONLY)?;
     module.add("READ_WRITE", READ_WRITE)?;
@@ -480,6 +827,10 @@ fn fastdbf(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("ON_DISK", ON_DISK)?;
     Ok(())
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Private helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
 fn field_to_dict<'py>(py: Python<'py>, field: &FieldDescriptor) -> PyResult<Bound<'py, PyDict>> {
     let dict = PyDict::new(py);
@@ -497,21 +848,26 @@ fn record_to_dict<'py>(
     py: Python<'py>,
     fields: &[FieldDescriptor],
     record: &Record,
+    encoding: Option<&'static encoding_rs::Encoding>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let dict = PyDict::new(py);
     for (field, value) in fields.iter().zip(record.values()) {
-        dict.set_item(field.name.as_str(), value_to_py(py, value)?)?;
+        dict.set_item(field.name.as_str(), value_to_py(py, value, encoding)?)?;
     }
     dict.set_item("_deleted", record.is_deleted())?;
     Ok(dict)
 }
 
-fn value_to_py(py: Python<'_>, value: &Value) -> PyResult<PyObject> {
+fn value_to_py(
+    py: Python<'_>,
+    value: &Value,
+    encoding: Option<&'static encoding_rs::Encoding>,
+) -> PyResult<PyObject> {
     match value {
         Value::Null => Ok(py.None()),
         Value::Character(text) => Ok(text.into_pyobject(py)?.unbind().into()),
         Value::Numeric(number) => Ok(number.into_pyobject(py)?.unbind().into()),
-        Value::Logical(value) => Ok(value.into_pyobject(py)?.unbind().into()),
+        Value::Logical(value) => Ok(value.into_pyobject(py)?.unbind()),
         Value::Date(Some(date)) => Ok(date_to_iso(*date).into_pyobject(py)?.unbind().into()),
         Value::Date(None) => Ok(py.None()),
         Value::Integer(number) => Ok(number.into_pyobject(py)?.unbind().into()),
@@ -521,21 +877,51 @@ fn value_to_py(py: Python<'_>, value: &Value) -> PyResult<PyObject> {
         }
         Value::DateTime(None) => Ok(py.None()),
         Value::Currency(number) => Ok(number.into_pyobject(py)?.unbind().into()),
-        Value::MemoRef(pointer) => Ok(pointer.into_pyobject(py)?.unbind().into()),
-        Value::Binary(bytes) => Ok(bytes.into_pyobject(py)?.unbind().into()),
+        Value::Memo(bytes) => {
+            let text = crate::codepage::decode_bytes(bytes, encoding);
+            Ok(text.into_pyobject(py)?.unbind().into())
+        }
+        Value::Binary(bytes) => Ok(bytes.into_pyobject(py)?.unbind()),
     }
 }
 
-fn py_to_value(value: &Bound<'_, PyAny>, field: &FieldDescriptor) -> PyResult<Value> {
+/// `py_to_value` with an optional encoding for Character decoding.
+fn py_to_value_with_encoding(
+    value: &Bound<'_, PyAny>,
+    field: &FieldDescriptor,
+    encoding: Option<&'static encoding_rs::Encoding>,
+) -> PyResult<Value> {
     if value.is_none() {
         return Ok(Value::Null);
     }
     match field.field_type {
-        crate::header::FieldType::Character => Ok(Value::Character(value.extract::<String>()?)),
+        crate::header::FieldType::Character => {
+            // Accept both str and bytes.
+            if let Ok(text) = value.extract::<String>() {
+                // Validate that the string can be encoded in the target encoding.
+                if let Some(enc) = encoding {
+                    let (_, _, had_errors) = enc.encode(&text);
+                    if had_errors {
+                        return Err(PyValueError::new_err(format!(
+                            "string contains characters that cannot be encoded in {:?}",
+                            enc.name()
+                        )));
+                    }
+                }
+                Ok(Value::Character(text))
+            } else if let Ok(bytes) = value.extract::<Vec<u8>>() {
+                let text = codepage::decode_bytes(&bytes, encoding);
+                Ok(Value::Character(text))
+            } else {
+                Err(PyTypeError::new_err("Character field expects str or bytes"))
+            }
+        }
         crate::header::FieldType::Date => {
             let raw = value.extract::<String>()?;
             let normalized = raw.replace('-', "");
-            Ok(Value::Date(Date::parse_ymd(&normalized).map_err(to_py_error)?))
+            Ok(Value::Date(
+                Date::parse_ymd(&normalized).map_err(to_py_error)?,
+            ))
         }
         crate::header::FieldType::Logical => Ok(Value::Logical(Some(value.extract::<bool>()?))),
         crate::header::FieldType::Numeric | crate::header::FieldType::Float => {
@@ -544,18 +930,37 @@ fn py_to_value(value: &Bound<'_, PyAny>, field: &FieldDescriptor) -> PyResult<Va
         crate::header::FieldType::Integer => Ok(Value::Integer(value.extract::<i32>()?)),
         crate::header::FieldType::Double => Ok(Value::Double(value.extract::<f64>()?)),
         crate::header::FieldType::Currency => Ok(Value::Currency(value.extract::<i64>()?)),
-        crate::header::FieldType::Memo
-        | crate::header::FieldType::General
-        | crate::header::FieldType::Picture => Ok(Value::MemoRef(value.extract::<u32>()?)),
+        crate::header::FieldType::Memo => {
+            if let Ok(text) = value.extract::<String>() {
+                if let Some(enc) = encoding {
+                    let (encoded, _, _) = enc.encode(&text);
+                    Ok(Value::Memo(encoded.into_owned()))
+                } else {
+                    Ok(Value::Memo(text.into_bytes()))
+                }
+            } else if let Ok(bytes) = value.extract::<Vec<u8>>() {
+                Ok(Value::Memo(bytes))
+            } else {
+                Err(PyTypeError::new_err("Memo field expects str or bytes"))
+            }
+        }
+        crate::header::FieldType::General | crate::header::FieldType::Picture => {
+            if let Ok(bytes) = value.extract::<Vec<u8>>() {
+                Ok(Value::Binary(bytes))
+            } else {
+                Err(PyTypeError::new_err("General/Picture field expects bytes"))
+            }
+        }
         crate::header::FieldType::NullFlags => Err(PyTypeError::new_err(
             "internal null-flag field cannot be assigned from Python",
         )),
         crate::header::FieldType::DateTime => {
             let raw = value.extract::<String>()?;
-            let (date_part, time_part) = raw
-                .split_once('T')
-                .ok_or_else(|| PyValueError::new_err("datetime must be ISO-like, e.g. 2024-01-31T12:34:56.000"))?;
-            let date = Date::parse_ymd(&date_part.replace('-', "")).map_err(to_py_error)?
+            let (date_part, time_part) = raw.split_once('T').ok_or_else(|| {
+                PyValueError::new_err("datetime must be ISO-like, e.g. 2024-01-31T12:34:56.000")
+            })?;
+            let date = Date::parse_ymd(&date_part.replace('-', ""))
+                .map_err(to_py_error)?
                 .ok_or_else(|| PyValueError::new_err("datetime date part cannot be empty"))?;
             let datetime = iso_datetime_parts_to_vfp(date, time_part)?;
             Ok(Value::DateTime(Some(datetime)))
@@ -590,6 +995,28 @@ fn dbf_type_to_kind(dbf_type: Option<&str>) -> PyResult<Option<crate::header::Db
     }
 }
 
+fn field_spec_string(info: &FieldDescriptor) -> String {
+    match info.field_type {
+        crate::header::FieldType::Character => format!("{} C({})", info.name, info.length),
+        crate::header::FieldType::Numeric => {
+            format!("{} N({},{})", info.name, info.length, info.decimals)
+        }
+        crate::header::FieldType::Float => {
+            format!("{} F({},{})", info.name, info.length, info.decimals)
+        }
+        crate::header::FieldType::Date => format!("{} D", info.name),
+        crate::header::FieldType::Logical => format!("{} L", info.name),
+        crate::header::FieldType::Memo => format!("{} M", info.name),
+        crate::header::FieldType::Integer => format!("{} I", info.name),
+        crate::header::FieldType::Double => format!("{} B", info.name),
+        crate::header::FieldType::DateTime => format!("{} T", info.name),
+        crate::header::FieldType::Currency => format!("{} Y", info.name),
+        crate::header::FieldType::General => format!("{} G", info.name),
+        crate::header::FieldType::Picture => format!("{} P", info.name),
+        crate::header::FieldType::NullFlags => format!("{} 0", info.name),
+    }
+}
+
 fn date_to_iso(date: Date) -> String {
     format!("{:04}-{:02}-{:02}", date.year, date.month, date.day)
 }
@@ -602,9 +1029,7 @@ fn datetime_to_iso(datetime: DateTime) -> String {
             let minute = (total_millis % 3_600_000) / 60_000;
             let second = (total_millis % 60_000) / 1_000;
             let millis = total_millis % 1_000;
-            format!(
-                "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}"
-            )
+            format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}")
         }
         None => format!(
             "julian:{} millis:{}",
@@ -669,7 +1094,6 @@ fn julian_day_to_ymd(julian_day: i32) -> Option<(i32, u32, u32)> {
     let d = (4 * c + 3) / 1_461;
     let e = c - (1_461 * d) / 4;
     let m = (5 * e + 2) / 153;
-
     let day = e - (153 * m + 2) / 5 + 1;
     let month = m + 3 - 12 * (m / 10);
     let year = 100 * b + d - 4_800 + m / 10;

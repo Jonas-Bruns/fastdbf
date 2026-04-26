@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::header::{CodePageMark, DbfKind, FieldDescriptor, FieldType, Header};
+use crate::memo::MemoFile;
 use crate::record::Record;
 use crate::spec::FieldSpec;
 use crate::value::{Date, DateTime, Value};
@@ -14,13 +15,13 @@ pub const READ_WRITE: &str = "read_write";
 pub const IN_MEMORY: &str = "in_memory";
 pub const ON_DISK: &str = "on_disk";
 
-#[derive(Debug, Clone)]
 pub struct Table {
     path: Option<PathBuf>,
     header: Header,
     fields: Vec<FieldDescriptor>,
     records: Vec<Record>,
     null_flags: Option<NullFlagLayout>,
+    pub memo_file: Option<MemoFile>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -59,8 +60,18 @@ impl Table {
             code_page,
         };
 
+        let mut memo_file = MemoFile::open_alongside(&path, header.kind)?;
+        let encoding = crate::codepage::encoding_for_mark(header.code_page.0);
+
         let (fields, null_flags) = read_field_descriptors(&mut file, &header)?;
-        let records = read_records(&mut file, &header, &fields, null_flags)?;
+        let records = read_records(
+            &mut file,
+            &header,
+            &fields,
+            null_flags,
+            memo_file.as_mut(),
+            encoding,
+        )?;
 
         // The header's record_count may not match the actual number of records in
         // truncated or otherwise corrupt files. Sync it so callers get a consistent
@@ -74,6 +85,7 @@ impl Table {
             fields,
             records,
             null_flags,
+            memo_file,
         })
     }
 
@@ -99,7 +111,14 @@ impl Table {
             }
             fields.push(descriptor);
         }
-        if nullable_index > 0 && !matches!(inferred_kind, DbfKind::VisualFoxPro | DbfKind::VisualFoxProAutoIncrement | DbfKind::VisualFoxProVar) {
+        if nullable_index > 0
+            && !matches!(
+                inferred_kind,
+                DbfKind::VisualFoxPro
+                    | DbfKind::VisualFoxProAutoIncrement
+                    | DbfKind::VisualFoxProVar
+            )
+        {
             return Err(Error::Unsupported(
                 "nullable fields require Visual FoxPro table type".to_string(),
             ));
@@ -112,9 +131,7 @@ impl Table {
         } else {
             None
         };
-        let header_length = 32
-            + ((fields.len() as u16 + u16::from(null_flags.is_some())) * 32)
-            + 1;
+        let header_length = 32 + ((fields.len() as u16 + u16::from(null_flags.is_some())) * 32) + 1;
         let record_length = offset;
         let header = Header {
             kind: inferred_kind,
@@ -130,6 +147,7 @@ impl Table {
             fields,
             records: Vec::new(),
             null_flags,
+            memo_file: None,
         })
     }
 
@@ -240,6 +258,19 @@ impl Table {
         self.header.last_update = None;
 
         let path = path.as_ref().to_path_buf();
+
+        let has_memo = self.fields.iter().any(|f| {
+            matches!(
+                f.field_type,
+                FieldType::Memo | FieldType::General | FieldType::Picture
+            )
+        });
+        if has_memo {
+            self.memo_file = Some(MemoFile::create_alongside(&path, self.header.kind)?);
+        } else {
+            self.memo_file = None;
+        }
+
         let mut file = File::create(&path)?;
         let header_bytes = encode_header(&self.header);
         file.write_all(&header_bytes)?;
@@ -260,18 +291,45 @@ impl Table {
         }
         file.write_all(&[0x0D])?;
 
+        let encoding = crate::codepage::encoding_for_mark(self.header.code_page.0);
+
         for record in &self.records {
             file.write_all(&encode_record(
                 record,
                 &self.fields,
                 self.null_flags,
                 self.header.record_length as usize,
+                self.memo_file.as_mut(),
+                encoding,
             )?)?;
         }
         file.write_all(&[0x1A])?;
         file.flush()?;
         self.path = Some(path);
         Ok(())
+    }
+
+    pub fn pack(&mut self) {
+        self.records.retain(|r| !r.is_deleted());
+        self.header.record_count = self.records.len() as u32;
+    }
+
+    pub fn add_fields(&mut self, _specs: &str) -> Result<()> {
+        Err(Error::Unsupported(
+            "schema modification not yet implemented".to_string(),
+        ))
+    }
+
+    pub fn remove_fields(&mut self, _names: &[&str]) -> Result<()> {
+        Err(Error::Unsupported(
+            "schema modification not yet implemented".to_string(),
+        ))
+    }
+
+    pub fn rename_field(&mut self, _old_name: &str, _new_name: &str) -> Result<()> {
+        Err(Error::Unsupported(
+            "schema modification not yet implemented".to_string(),
+        ))
     }
 }
 
@@ -328,6 +386,8 @@ fn read_records(
     header: &Header,
     fields: &[FieldDescriptor],
     null_flags: Option<NullFlagLayout>,
+    mut memo_file: Option<&mut MemoFile>,
+    encoding: Option<&'static encoding_rs::Encoding>,
 ) -> Result<Vec<Record>> {
     let mut records = Vec::with_capacity(header.record_count as usize);
     for _ in 0..header.record_count {
@@ -352,21 +412,34 @@ fn read_records(
                 .zip(null_bits.as_ref())
                 .map(|(index, bytes)| null_bit_is_set(bytes, index))
                 .unwrap_or(false);
-            values.push(parse_value(field, &raw[start..end], is_null)?);
+            values.push(parse_value(
+                field,
+                &raw[start..end],
+                is_null,
+                memo_file.as_deref_mut(),
+                encoding,
+            )?);
         }
         records.push(Record::from_values(deleted, values));
     }
     Ok(records)
 }
 
-fn parse_value(field: &FieldDescriptor, raw: &[u8], is_null: bool) -> Result<Value> {
+fn parse_value(
+    field: &FieldDescriptor,
+    raw: &[u8],
+    is_null: bool,
+    memo_file: Option<&mut MemoFile>,
+    encoding: Option<&'static encoding_rs::Encoding>,
+) -> Result<Value> {
     if is_null {
         return Ok(Value::Null);
     }
     match field.field_type {
-        FieldType::Character => Ok(Value::Character(
-            String::from_utf8_lossy(raw).trim_end().to_string(),
-        )),
+        FieldType::Character => {
+            let text = crate::codepage::decode_bytes(raw, encoding);
+            Ok(Value::Character(text.trim_end().to_string()))
+        }
         FieldType::Date => {
             let text = String::from_utf8_lossy(raw);
             Ok(Value::Date(Date::parse_ymd(&text)?))
@@ -414,16 +487,38 @@ fn parse_value(field: &FieldDescriptor, raw: &[u8], is_null: bool) -> Result<Val
         FieldType::Currency => Ok(Value::Currency(i64::from_le_bytes([
             raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
         ]))),
-        FieldType::Memo | FieldType::General | FieldType::Picture => {
+        FieldType::Memo => {
             let text = String::from_utf8_lossy(raw);
             let trimmed = text.trim();
             if trimmed.is_empty() {
-                Ok(Value::MemoRef(0))
+                Ok(Value::Memo(Vec::new()))
             } else {
                 let pointer = trimmed.parse::<u32>().map_err(|_| {
                     Error::InvalidFormat(format!("invalid memo pointer payload: {trimmed:?}"))
                 })?;
-                Ok(Value::MemoRef(pointer))
+                if let Some(memo) = memo_file {
+                    let bytes = memo.read(pointer)?;
+                    Ok(Value::Memo(bytes))
+                } else {
+                    Ok(Value::Memo(Vec::new()))
+                }
+            }
+        }
+        FieldType::General | FieldType::Picture => {
+            let text = String::from_utf8_lossy(raw);
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                Ok(Value::Binary(Vec::new()))
+            } else {
+                let pointer = trimmed.parse::<u32>().map_err(|_| {
+                    Error::InvalidFormat(format!("invalid memo pointer payload: {trimmed:?}"))
+                })?;
+                if let Some(memo) = memo_file {
+                    let bytes = memo.read(pointer)?;
+                    Ok(Value::Binary(bytes))
+                } else {
+                    Ok(Value::Binary(Vec::new()))
+                }
             }
         }
         FieldType::NullFlags => Ok(Value::Binary(raw.to_vec())),
@@ -463,6 +558,8 @@ fn encode_record(
     fields: &[FieldDescriptor],
     null_flags: Option<NullFlagLayout>,
     record_length: usize,
+    mut memo_file: Option<&mut MemoFile>,
+    encoding: Option<&'static encoding_rs::Encoding>,
 ) -> Result<Vec<u8>> {
     let mut raw = vec![b' '; record_length];
     raw[0] = if record.is_deleted() { b'*' } else { b' ' };
@@ -480,7 +577,7 @@ fn encode_record(
                 }
             }
         }
-        let encoded = encode_value(field, value)?;
+        let encoded = encode_value(field, value, memo_file.as_deref_mut(), encoding)?;
         let start = field.offset as usize;
         let end = start + field.length as usize;
         raw[start..end].copy_from_slice(&encoded);
@@ -488,12 +585,19 @@ fn encode_record(
     Ok(raw)
 }
 
-fn encode_value(field: &FieldDescriptor, value: &Value) -> Result<Vec<u8>> {
+fn encode_value(
+    field: &FieldDescriptor,
+    value: &Value,
+    memo_file: Option<&mut MemoFile>,
+    encoding: Option<&'static encoding_rs::Encoding>,
+) -> Result<Vec<u8>> {
     let size = field.length as usize;
     match (field.field_type, value) {
         (_, Value::Null) if field.is_nullable() => Ok(blank_bytes_for_null(field)),
         (FieldType::Character, Value::Character(text)) => {
-            let bytes = text.as_bytes();
+            let bytes = crate::codepage::encode_str(text, encoding).ok_or_else(|| {
+                Error::InvalidFormat("cannot encode string to field code page".to_string())
+            })?;
             if bytes.len() > size {
                 return Err(Error::Overflow(format!(
                     "value {text:?} exceeds width {} for field {}",
@@ -501,7 +605,7 @@ fn encode_value(field: &FieldDescriptor, value: &Value) -> Result<Vec<u8>> {
                 )));
             }
             let mut raw = vec![b' '; size];
-            raw[..bytes.len()].copy_from_slice(bytes);
+            raw[..bytes.len()].copy_from_slice(&bytes);
             Ok(raw)
         }
         (FieldType::Character, Value::Null) => Ok(vec![b' '; size]),
@@ -544,9 +648,19 @@ fn encode_value(field: &FieldDescriptor, value: &Value) -> Result<Vec<u8>> {
             Ok(vec![0u8; 8])
         }
         (FieldType::Currency, Value::Currency(number)) => Ok(number.to_le_bytes().to_vec()),
-        (FieldType::Memo | FieldType::General | FieldType::Picture, Value::MemoRef(pointer)) => {
-            let rendered = format!("{pointer:>width$}", width = size);
-            Ok(rendered.into_bytes())
+        (FieldType::Memo, Value::Memo(bytes))
+        | (FieldType::General | FieldType::Picture, Value::Binary(bytes)) => {
+            if bytes.is_empty() {
+                Ok(vec![b' '; size])
+            } else if let Some(memo) = memo_file {
+                let pointer = memo.append(bytes)?;
+                let rendered = format!("{pointer:>width$}", width = size);
+                Ok(rendered.into_bytes())
+            } else {
+                Err(Error::Io(std::io::Error::other(
+                    "missing memo file for writing",
+                )))
+            }
         }
         (FieldType::Memo | FieldType::General | FieldType::Picture, Value::Null) => {
             Ok(vec![b' '; size])
@@ -579,7 +693,8 @@ fn blank_bytes_for_null(field: &FieldDescriptor) -> Vec<u8> {
 
 fn nullable_len(nullable_count: usize) -> Result<u8> {
     let length = nullable_count.div_ceil(8);
-    u8::try_from(length).map_err(|_| Error::InvalidFieldSpec("too many nullable fields".to_string()))
+    u8::try_from(length)
+        .map_err(|_| Error::InvalidFieldSpec("too many nullable fields".to_string()))
 }
 
 fn null_bit_is_set(bytes: &[u8], bit_index: usize) -> bool {
@@ -626,15 +741,9 @@ mod tests {
         let mut table =
             Table::new("name C(10) null; age N(3,0) null; when T null; active L null").unwrap();
         let mut record = table.new_record();
-        record
-            .insert(table.fields(), "name", Value::Null)
-            .unwrap();
-        record
-            .insert(table.fields(), "age", Value::Null)
-            .unwrap();
-        record
-            .insert(table.fields(), "when", Value::Null)
-            .unwrap();
+        record.insert(table.fields(), "name", Value::Null).unwrap();
+        record.insert(table.fields(), "age", Value::Null).unwrap();
+        record.insert(table.fields(), "when", Value::Null).unwrap();
         record
             .insert(table.fields(), "active", Value::Null)
             .unwrap();

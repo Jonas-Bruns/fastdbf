@@ -109,7 +109,7 @@ impl FieldType {
             Self::Character => Value::Character(String::new()),
             Self::Date => Value::Date(None),
             Self::Logical => Value::Logical(None),
-            Self::Memo | Self::General | Self::Picture => Value::MemoRef(0),
+            Self::Memo | Self::General | Self::Picture => Value::Memo(Vec::new()),
             Self::Numeric | Self::Float => Value::Numeric(0.0),
             Self::Integer => Value::Integer(0),
             Self::Double => Value::Double(0.0),

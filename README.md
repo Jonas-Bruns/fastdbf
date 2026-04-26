@@ -4,6 +4,8 @@
 
 The current focus is a practical Python-first package for reading and writing `.dbf` files, including Visual FoxPro-style nullable fields.
 
+![Performance Benchmark](benchmark.png)
+
 ## Status
 
 This project is in an early but usable state.
@@ -154,7 +156,7 @@ import fastdbf
 table = fastdbf.Table("input.dbf")
 table.open()
 
-df = pd.DataFrame(table.records())
+df = pd.DataFrame(list(table))
 df["NAME"] = df["NAME"].str.upper()
 
 field_specs = []
@@ -215,3 +217,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+## License
+
+This project is licensed under the [Apache License 2.0](LICENSE).

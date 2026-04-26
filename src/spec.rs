@@ -59,7 +59,11 @@ impl FieldSpec {
             offset,
             length: self.length,
             decimals: self.decimals,
-            flags: if self.nullable { FIELD_FLAG_NULLABLE } else { 0 },
+            flags: if self.nullable {
+                FIELD_FLAG_NULLABLE
+            } else {
+                0
+            },
             nullable_index: None,
         }
     }

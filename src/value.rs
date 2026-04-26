@@ -65,7 +65,7 @@ pub enum Value {
     Double(f64),
     DateTime(Option<DateTime>),
     Currency(i64),
-    MemoRef(u32),
+    Memo(Vec<u8>),
     Binary(Vec<u8>),
 }
 

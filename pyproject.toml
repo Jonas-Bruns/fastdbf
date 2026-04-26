@@ -6,14 +6,15 @@ build-backend = "maturin"
 name = "fastdbf"
 version = "0.1.0"
 description = "A Python package for reading and writing DBF files, powered by a Rust core"
+authors = [{ name = "Jonas Bruns" }]
 requires-python = ">=3.8"
 readme = "README.md"
-license = { text = "BSD-3-Clause" }
+license = { text = "Apache-2.0" }
 keywords = ["dbf", "dbase", "foxpro", "visual-foxpro", "rust", "python"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: BSD License",
+  "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.8",
@@ -32,6 +33,10 @@ dev = [
   "pytest>=8.0",
   "pandas>=2.0",
   "maturin>=1.13.1",
+  "matplotlib>=3.7.5",
+  "dbf>=0.99.11",
+  "seaborn>=0.13.2",
+  "ruff>=0.15.12",
 ]
 
 [tool.maturin]
@@ -40,3 +45,10 @@ bindings = "pyo3"
 
 [tool.uv]
 default-groups = ["dev"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
