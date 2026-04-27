@@ -291,9 +291,9 @@ pub struct PyTable {
 impl PyTable {
     #[new]
     #[pyo3(signature = (filename, field_specs=None, on_disk=true, dbf_type=None, codepage=None))]
-    fn new(
+    fn new<'py>(
         filename: String,
-        field_specs: Option<String>,
+        field_specs: Option<&Bound<'py, PyAny>>,
         on_disk: bool,
         dbf_type: Option<String>,
         codepage: Option<String>,
@@ -321,11 +321,37 @@ impl PyTable {
         let inner = match field_specs {
             Some(specs) => {
                 let kind = dbf_type_to_kind(dbf_type.as_deref())?;
-                Table::from_specs(
-                    crate::spec::FieldSpec::parse_many(&specs).map_err(to_py_error)?,
-                    kind,
-                )
-                .map_err(to_py_error)?
+                let parsed_specs = if let Ok(specs_str) = specs.extract::<String>() {
+                    crate::spec::FieldSpec::parse_many(&specs_str).map_err(to_py_error)?
+                } else if let Ok(specs_list) = specs.extract::<Bound<'py, PyList>>() {
+                    let mut list = Vec::new();
+                    for item in specs_list.iter() {
+                        let dict = item.extract::<Bound<'py, PyDict>>()?;
+                        let name = dict.get_item("name")?.unwrap().extract::<String>()?;
+                        let type_code = dict.get_item("type_code")?.unwrap().extract::<String>()?;
+                        let length = dict.get_item("length")?.unwrap().extract::<u8>()?;
+                        let decimals = dict.get_item("decimals")?.unwrap().extract::<u8>()?;
+                        let nullable = dict.get_item("nullable")?.unwrap().extract::<bool>()?;
+                        let binary = dict.get_item("binary")?.unwrap().extract::<bool>()?;
+                        
+                        let field_type = crate::header::FieldType::from_byte(type_code.as_bytes().first().copied().unwrap_or(b'C'))
+                            .map_err(to_py_error)?;
+                            
+                        list.push(crate::spec::FieldSpec {
+                            name,
+                            field_type,
+                            length,
+                            decimals,
+                            nullable,
+                            binary,
+                        });
+                    }
+                    list
+                } else {
+                    return Err(PyValueError::new_err("field_specs must be a string or a list of dicts"));
+                };
+
+                Table::from_specs(parsed_specs, kind).map_err(to_py_error)?
             }
             None => Table::open(&filename).map_err(to_py_error)?,
         };

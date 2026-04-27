@@ -26,7 +26,7 @@ def analyze_header(path):
     }
 
 # --- Test VFP ---
-specs = "name C(20); score B BINARY; amount N(10,3) null; active L null"
+specs = "name C(20); score B(8,3) BINARY; amount N(10,3) null; active L null"
 
 # Python dbf
 t_dbf_vfp = dbf.Table('vfp_dbf.dbf', specs, dbf_type='vfp')

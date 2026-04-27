@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7
+
+- Feature: `field_specs` now accepts the dictionary output of `Table.fields()` directly, eliminating the need to manually format strings for table copying.
+
 ## 0.1.6
 
 - Fix: Omit the 263-byte backlink padding when writing VFP tables to ensure maximum compatibility with standard DBF viewers that expect the terminator immediately before the data records.
