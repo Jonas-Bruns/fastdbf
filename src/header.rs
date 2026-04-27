@@ -6,7 +6,7 @@ pub const FIELD_FLAG_BINARY: u8 = 0x04;
 
 /// Visual FoxPro tables have 263 extra bytes after the header terminator
 /// for the DBC (database container) backlink path. Non-VFP tables have 0.
-pub const VFP_BACKLINK_SIZE: u16 = 263;
+pub const VFP_BACKLINK_SIZE: u16 = 0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DbfKind {

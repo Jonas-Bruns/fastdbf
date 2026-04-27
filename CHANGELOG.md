@@ -1,5 +1,9 @@
 # Changelog
-    
+
+## 0.1.6
+
+- Fix: Omit the 263-byte backlink padding when writing VFP tables to ensure maximum compatibility with standard DBF viewers that expect the terminator immediately before the data records.
+
 ## 0.1.5
 
 - Fix: Set the correct flags byte (`0x05`) for the hidden `_NULLFLAGS` field descriptor in VFP tables to ensure full compatibility with third-party tooling.
