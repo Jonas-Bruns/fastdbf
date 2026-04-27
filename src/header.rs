@@ -4,6 +4,10 @@ use crate::value::{Date, Value};
 pub const FIELD_FLAG_NULLABLE: u8 = 0x02;
 pub const FIELD_FLAG_BINARY: u8 = 0x04;
 
+/// Visual FoxPro tables have 263 extra bytes after the header terminator
+/// for the DBC (database container) backlink path. Non-VFP tables have 0.
+pub const VFP_BACKLINK_SIZE: u16 = 263;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DbfKind {
     DBase3,
@@ -41,6 +45,19 @@ impl DbfKind {
             Self::VisualFoxProVar => 0x32,
             Self::DBase4WithMemo => 0x8B,
         }
+    }
+
+    /// Returns `true` for Visual FoxPro table variants.
+    pub const fn is_vfp(self) -> bool {
+        matches!(
+            self,
+            Self::VisualFoxPro | Self::VisualFoxProAutoIncrement | Self::VisualFoxProVar
+        )
+    }
+
+    /// Extra bytes written between the header terminator and the first record.
+    pub const fn backlink_size(self) -> u16 {
+        if self.is_vfp() { VFP_BACKLINK_SIZE } else { 0 }
     }
 }
 

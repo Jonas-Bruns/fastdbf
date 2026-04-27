@@ -1,6 +1,6 @@
 [package]
 name = "fastdbf"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 authors = ["Jonas Bruns"]
 description = "Fast DBF reader/writer with Python bindings"

@@ -1,5 +1,10 @@
 # Changelog
     
+## 0.1.3
+
+- Fix: VFP tables now correctly write the 263-byte DBC backlink area after the header terminator, fixing compatibility with the Python `dbf` package and other VFP-aware readers.
+- Fix: `header_length` is now computed correctly for VFP tables (includes backlink size), preventing files from being unreadable by third-party tools.
+
 ## 0.1.2
 
 - Feature: Parse and represent `BINARY` flag in DBF files and field specs (matching Python `dbf` behavior).

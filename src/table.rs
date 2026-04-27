@@ -131,7 +131,11 @@ impl Table {
         } else {
             None
         };
-        let header_length = 32 + ((fields.len() as u16 + u16::from(null_flags.is_some())) * 32) + 1;
+        let backlink = inferred_kind.backlink_size();
+        let header_length = 32
+            + ((fields.len() as u16 + u16::from(null_flags.is_some())) * 32)
+            + 1   // 0x0D terminator
+            + backlink;
         let record_length = offset;
         let header = Header {
             kind: inferred_kind,
@@ -260,7 +264,11 @@ impl Table {
     pub fn write_to_path(&mut self, path: impl AsRef<Path>) -> Result<()> {
         self.header.record_count = self.records.len() as u32;
         self.header.last_update = None;
-        self.header.header_length = 32 + (self.fields.len() as u16 + u16::from(self.null_flags.is_some())) * 32 + 1;
+        let backlink = self.header.kind.backlink_size();
+        self.header.header_length = 32
+            + (self.fields.len() as u16 + u16::from(self.null_flags.is_some())) * 32
+            + 1   // 0x0D terminator
+            + backlink;
 
         let path = path.as_ref().to_path_buf();
 
@@ -295,6 +303,10 @@ impl Table {
             }))?;
         }
         file.write_all(&[0x0D])?;
+        // VFP tables require 263 zero bytes for the DBC backlink path.
+        if backlink > 0 {
+            file.write_all(&vec![0u8; backlink as usize])?;
+        }
 
         let encoding = crate::codepage::encoding_for_mark(self.header.code_page.0);
 
