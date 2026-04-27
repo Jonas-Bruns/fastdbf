@@ -171,13 +171,39 @@ impl Table {
                     FieldType::Float => {
                         format!("{} F({},{})", field.name, field.length, field.decimals)
                     }
-                    FieldType::Date => format!("{} D", field.name),
+                    FieldType::Date    => format!("{} D", field.name),
                     FieldType::Logical => format!("{} L", field.name),
-                    FieldType::Memo => format!("{} M", field.name),
-                    FieldType::Integer => format!("{} I", field.name),
-                    FieldType::Double => format!("{} B", field.name),
-                    FieldType::DateTime => format!("{} T", field.name),
-                    FieldType::Currency => format!("{} Y", field.name),
+                    // Fixed-size types: include decimals only when non-zero so that
+                    // the spec string round-trips faithfully through parse_type_part.
+                    FieldType::Integer => {
+                        if field.decimals > 0 {
+                            format!("{} I({},{})", field.name, field.length, field.decimals)
+                        } else {
+                            format!("{} I", field.name)
+                        }
+                    }
+                    FieldType::Double => {
+                        if field.decimals > 0 {
+                            format!("{} B({},{})", field.name, field.length, field.decimals)
+                        } else {
+                            format!("{} B", field.name)
+                        }
+                    }
+                    FieldType::DateTime => {
+                        if field.decimals > 0 {
+                            format!("{} T({},{})", field.name, field.length, field.decimals)
+                        } else {
+                            format!("{} T", field.name)
+                        }
+                    }
+                    FieldType::Currency => {
+                        if field.decimals > 0 {
+                            format!("{} Y({},{})", field.name, field.length, field.decimals)
+                        } else {
+                            format!("{} Y", field.name)
+                        }
+                    }
+                    FieldType::Memo    => format!("{} M", field.name),
                     FieldType::General => format!("{} G", field.name),
                     FieldType::Picture => format!("{} P", field.name),
                     FieldType::NullFlags => format!("{} 0", field.name),

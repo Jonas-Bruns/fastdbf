@@ -888,24 +888,46 @@ fn dbf_type_to_kind(dbf_type: Option<&str>) -> PyResult<Option<crate::header::Db
 }
 
 fn field_spec_string(info: &FieldDescriptor) -> String {
+    use crate::header::FieldType;
     match info.field_type {
-        crate::header::FieldType::Character => format!("{} C({})", info.name, info.length),
-        crate::header::FieldType::Numeric => {
-            format!("{} N({},{})", info.name, info.length, info.decimals)
+        FieldType::Character => format!("{} C({})", info.name, info.length),
+        FieldType::Numeric   => format!("{} N({},{})", info.name, info.length, info.decimals),
+        FieldType::Float     => format!("{} F({},{})", info.name, info.length, info.decimals),
+        FieldType::Date      => format!("{} D", info.name),
+        FieldType::Logical   => format!("{} L", info.name),
+        FieldType::Memo      => format!("{} M", info.name),
+        FieldType::General   => format!("{} G", info.name),
+        FieldType::Picture   => format!("{} P", info.name),
+        FieldType::NullFlags => format!("{} 0", info.name),
+        // Fixed-size types: include length+decimals only when decimals > 0
+        FieldType::Integer => {
+            if info.decimals > 0 {
+                format!("{} I({},{})", info.name, info.length, info.decimals)
+            } else {
+                format!("{} I", info.name)
+            }
         }
-        crate::header::FieldType::Float => {
-            format!("{} F({},{})", info.name, info.length, info.decimals)
+        FieldType::Double => {
+            if info.decimals > 0 {
+                format!("{} B({},{})", info.name, info.length, info.decimals)
+            } else {
+                format!("{} B", info.name)
+            }
         }
-        crate::header::FieldType::Date => format!("{} D", info.name),
-        crate::header::FieldType::Logical => format!("{} L", info.name),
-        crate::header::FieldType::Memo => format!("{} M", info.name),
-        crate::header::FieldType::Integer => format!("{} I", info.name),
-        crate::header::FieldType::Double => format!("{} B", info.name),
-        crate::header::FieldType::DateTime => format!("{} T", info.name),
-        crate::header::FieldType::Currency => format!("{} Y", info.name),
-        crate::header::FieldType::General => format!("{} G", info.name),
-        crate::header::FieldType::Picture => format!("{} P", info.name),
-        crate::header::FieldType::NullFlags => format!("{} 0", info.name),
+        FieldType::DateTime => {
+            if info.decimals > 0 {
+                format!("{} T({},{})", info.name, info.length, info.decimals)
+            } else {
+                format!("{} T", info.name)
+            }
+        }
+        FieldType::Currency => {
+            if info.decimals > 0 {
+                format!("{} Y({},{})", info.name, info.length, info.decimals)
+            } else {
+                format!("{} Y", info.name)
+            }
+        }
     }
 }
 

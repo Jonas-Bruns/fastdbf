@@ -1,5 +1,9 @@
 # Changelog
     
+## 0.1.4
+
+- Fix: Ensure decimals are preserved for fixed-size field types like `Double (B)` when calling `Table.structure()` and converting back to specs.
+
 ## 0.1.3
 
 - Fix: VFP tables now correctly write the 263-byte DBC backlink area after the header terminator, fixing compatibility with the Python `dbf` package and other VFP-aware readers.
