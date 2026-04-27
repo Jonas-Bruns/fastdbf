@@ -876,12 +876,15 @@ fn dbf_type_to_kind(dbf_type: Option<&str>) -> PyResult<Option<crate::header::Db
         None => Ok(None),
         Some(value) if value.is_empty() => Ok(None),
         Some(value) => match value.as_str() {
-            "db3" => Ok(Some(crate::header::DbfKind::DBase3)),
-            "vfp" => Ok(Some(crate::header::DbfKind::VisualFoxPro)),
-            "fp" => Ok(Some(crate::header::DbfKind::FoxPro2WithMemo)),
-            "db4" => Ok(Some(crate::header::DbfKind::DBase4WithMemo)),
+            "db3" | "dbase3" => Ok(Some(crate::header::DbfKind::DBase3)),
+            "db3_memo" | "dbase3withmemo" => Ok(Some(crate::header::DbfKind::DBase3WithMemo)),
+            "fp" | "foxpro2withmemo" => Ok(Some(crate::header::DbfKind::FoxPro2WithMemo)),
+            "vfp" | "visualfoxpro" => Ok(Some(crate::header::DbfKind::VisualFoxPro)),
+            "vfp_auto" | "visualfoxproautoincrement" => Ok(Some(crate::header::DbfKind::VisualFoxProAutoIncrement)),
+            "vfp_var" | "visualfoxprovar" => Ok(Some(crate::header::DbfKind::VisualFoxProVar)),
+            "db4" | "dbase4withmemo" => Ok(Some(crate::header::DbfKind::DBase4WithMemo)),
             other => Err(PyValueError::new_err(format!(
-                "unsupported dbf_type {other:?}; use 'db3', 'vfp', 'fp', or 'db4'"
+                "unsupported dbf_type {other:?}; use e.g. 'db3', 'vfp', 'fp', or the full type name"
             ))),
         },
     }

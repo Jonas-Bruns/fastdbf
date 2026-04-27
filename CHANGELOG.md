@@ -1,5 +1,10 @@
 # Changelog
     
+## 0.1.5
+
+- Fix: Set the correct flags byte (`0x05`) for the hidden `_NULLFLAGS` field descriptor in VFP tables to ensure full compatibility with third-party tooling.
+- Feature: `dbf_type` now accepts full type names like `"VisualFoxPro"` or `"DBase3"`, allowing dynamic roundtripping via `Table.kind`.
+
 ## 0.1.4
 
 - Fix: Ensure decimals are preserved for fixed-size field types like `Double (B)` when calling `Table.structure()` and converting back to specs.

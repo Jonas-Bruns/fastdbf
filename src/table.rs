@@ -324,7 +324,7 @@ impl Table {
                 offset: null_flags.offset,
                 length: null_flags.length,
                 decimals: 0,
-                flags: 0,
+                flags: 0x05, // 0x01 (System) | 0x04 (Binary/NOCPTRANS)
                 nullable_index: None,
             }))?;
         }
