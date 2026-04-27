@@ -114,15 +114,7 @@ table.write("people.dbf")
 table.close()
 ```
 
-Read directly into a list of dictionaries:
 
-```python
-import fastdbf
-
-rows = fastdbf.read_dbf("people.dbf")
-for row in rows:
-    print(row)
-```
 
 ## Field Types
 

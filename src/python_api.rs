@@ -551,11 +551,12 @@ impl PyTable {
     // ── Open / close ──────────────────────────────────────────────────
 
     #[pyo3(signature = (mode=None))]
-    fn open(&mut self, mode: Option<&str>) {
-        self.status = match mode {
-            Some("r") | Some("rb") => TableStatus::ReadOnly,
+    fn open<'py>(mut slf: PyRefMut<'py, Self>, mode: Option<&str>) -> PyRefMut<'py, Self> {
+        slf.status = match mode {
+            Some("r") | Some("rb") | Some("read-only") | Some("read_only") => TableStatus::ReadOnly,
             _ => TableStatus::ReadWrite,
         };
+        slf
     }
 
     fn close(&mut self) -> PyResult<()> {
@@ -665,6 +666,9 @@ impl PyTable {
                 if info.is_nullable() {
                     spec.push_str(" null");
                 }
+                if info.is_binary() {
+                    spec.push_str(" BINARY");
+                }
                 Ok(spec)
             }
             None => Ok(self.inner.structure()),
@@ -697,110 +701,6 @@ impl PyTable {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Module-level functions
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[pyfunction]
-fn open_table(path: &str) -> PyResult<PyTable> {
-    let table = Table::open(path).map_err(to_py_error)?;
-    let encoding = codepage::encoding_for_mark(table.header().code_page.0);
-    Ok(PyTable {
-        inner: table,
-        default_filename: Some(path.to_string()),
-        on_disk: true,
-        status: TableStatus::ReadWrite,
-        encoding,
-    })
-}
-
-#[pyfunction]
-#[pyo3(signature = (field_specs, filename=":memory:", on_disk=false, dbf_type=None))]
-fn create_table(
-    field_specs: &str,
-    filename: &str,
-    on_disk: bool,
-    dbf_type: Option<&str>,
-) -> PyResult<PyTable> {
-    let kind = dbf_type_to_kind(dbf_type)?;
-    let table = Table::from_specs(
-        crate::spec::FieldSpec::parse_many(field_specs).map_err(to_py_error)?,
-        kind,
-    )
-    .map_err(to_py_error)?;
-    Ok(PyTable {
-        inner: table,
-        default_filename: Some(filename.to_string()),
-        on_disk,
-        status: TableStatus::Closed,
-        encoding: None,
-    })
-}
-
-#[pyfunction]
-fn read_dbf<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyList>> {
-    let table = Table::open(path).map_err(to_py_error)?;
-    let encoding = crate::codepage::encoding_for_mark(table.header().code_page.0);
-    let items = table
-        .records()
-        .iter()
-        .map(|record| record_to_dict(py, table.fields(), record, encoding))
-        .collect::<PyResult<Vec<_>>>()?;
-    PyList::new(py, items)
-}
-
-#[pyfunction]
-fn field_names(thing: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
-    if let Ok(table) = thing.extract::<PyRef<'_, PyTable>>() {
-        Ok(table.field_names())
-    } else {
-        Err(PyTypeError::new_err(
-            "field_names currently supports Table objects only",
-        ))
-    }
-}
-
-#[pyfunction]
-fn table_type(path: &str) -> PyResult<(u8, String)> {
-    let table = Table::open(path).map_err(to_py_error)?;
-    let version = table.header().kind.version_byte();
-    Ok((version, format!("{:?}", table.header().kind)))
-}
-
-/// Write back a modified `PyRecord` into a table at the given index.
-///
-/// Mirrors `dbf.write(record, field=value)` in the Python library.
-#[pyfunction]
-#[pyo3(signature = (table, index, **kwargs))]
-fn write(
-    mut table: PyRefMut<'_, PyTable>,
-    index: usize,
-    kwargs: Option<&Bound<'_, PyDict>>,
-) -> PyResult<()> {
-    table.require_read_write()?;
-    let encoding = table.encoding;
-    let fields = table.inner.fields().to_vec();
-    let record = table
-        .inner
-        .records_mut()
-        .get_mut(index)
-        .ok_or_else(|| PyKeyError::new_err(format!("record index out of range: {index}")))?;
-    if let Some(kwargs) = kwargs {
-        for (key, value) in kwargs.iter() {
-            let name: String = key.extract()?;
-            let upper = name.trim().to_ascii_uppercase();
-            let field = fields
-                .iter()
-                .find(|f| f.name == upper)
-                .ok_or_else(|| PyKeyError::new_err(format!("field not found: {upper}")))?
-                .clone();
-            let v = py_to_value_with_encoding(&value, &field, encoding)?;
-            record.insert(&fields, &upper, v).map_err(to_py_error)?;
-        }
-    }
-    Ok(())
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Module registration
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -810,13 +710,6 @@ fn fastdbf(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyRecord>()?;
     module.add_class::<TableStatus>()?;
     module.add_class::<TableLocation>()?;
-    module.add_function(wrap_pyfunction!(open_table, module)?)?;
-    module.add_function(wrap_pyfunction!(create_table, module)?)?;
-    module.add_function(wrap_pyfunction!(read_dbf, module)?)?;
-    module.add_function(wrap_pyfunction!(field_names, module)?)?;
-
-    module.add_function(wrap_pyfunction!(table_type, module)?)?;
-    module.add_function(wrap_pyfunction!(write, module)?)?;
     // Legacy string constants.
     module.add("CLOSED", CLOSED)?;
     module.add("READ_ONLY", READ_ONLY)?;
@@ -839,6 +732,7 @@ fn field_to_dict<'py>(py: Python<'py>, field: &FieldDescriptor) -> PyResult<Boun
     dict.set_item("decimals", field.decimals)?;
     dict.set_item("offset", field.offset)?;
     dict.set_item("nullable", field.is_nullable())?;
+    dict.set_item("binary", field.is_binary())?;
     Ok(dict)
 }
 

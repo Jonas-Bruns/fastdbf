@@ -1,4 +1,15 @@
 # Changelog
+    
+## 0.1.2
+
+- Feature: Parse and represent `BINARY` flag in DBF files and field specs (matching Python `dbf` behavior).
+- Fix: Prevent DBF file corruption by correctly padding/sizing header files when rewriting a DBF after `Table.close()`.
+- Refactor: Make Python `Table.open(mode=...)` return `self` to support context manager usages.
+- Refactor: Remove unnecessary module-level Python API functions (`read_dbf`, `open_table`, `create_table`, etc) and enforce object-oriented `Table` usage.
+
+## 0.1.1
+
+- Setup automated GitHub Actions CI release pipeline.
 
 ## 0.1.0
 

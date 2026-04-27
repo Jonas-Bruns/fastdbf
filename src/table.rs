@@ -181,6 +181,9 @@ impl Table {
                 if field.is_nullable() {
                     spec.push_str(" null");
                 }
+                if field.is_binary() {
+                    spec.push_str(" BINARY");
+                }
                 spec
             })
             .collect::<Vec<_>>()
@@ -203,6 +206,7 @@ impl Table {
                 length: field.length,
                 decimals: field.decimals,
                 nullable: field.is_nullable(),
+                binary: field.is_binary(),
             })
             .collect::<Vec<_>>();
         let mut table = Self::from_specs(specs, kind.or(Some(self.header.kind)))?;
@@ -256,6 +260,7 @@ impl Table {
     pub fn write_to_path(&mut self, path: impl AsRef<Path>) -> Result<()> {
         self.header.record_count = self.records.len() as u32;
         self.header.last_update = None;
+        self.header.header_length = 32 + (self.fields.len() as u16 + u16::from(self.null_flags.is_some())) * 32 + 1;
 
         let path = path.as_ref().to_path_buf();
 

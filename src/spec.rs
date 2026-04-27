@@ -10,6 +10,7 @@ pub struct FieldSpec {
     pub length: u8,
     pub decimals: u8,
     pub nullable: bool,
+    pub binary: bool,
 }
 
 impl FieldSpec {
@@ -31,9 +32,11 @@ impl FieldSpec {
             .next()
             .ok_or_else(|| Error::InvalidFieldSpec(format!("missing field type in {raw:?}")))?;
         let mut nullable = false;
+        let mut binary = false;
         for modifier in parts {
             match modifier.to_ascii_lowercase().as_str() {
                 "null" | "nullable" => nullable = true,
+                "binary" | "nocptrans" => binary = true,
                 other => {
                     return Err(Error::InvalidFieldSpec(format!(
                         "unsupported field modifier {other:?} in {raw:?}"
@@ -49,6 +52,7 @@ impl FieldSpec {
             length,
             decimals,
             nullable,
+            binary,
         })
     }
 
@@ -59,10 +63,11 @@ impl FieldSpec {
             offset,
             length: self.length,
             decimals: self.decimals,
-            flags: if self.nullable {
-                FIELD_FLAG_NULLABLE
-            } else {
-                0
+            flags: {
+                let mut f = 0;
+                if self.nullable { f |= FIELD_FLAG_NULLABLE; }
+                if self.binary { f |= crate::header::FIELD_FLAG_BINARY; }
+                f
             },
             nullable_index: None,
         }

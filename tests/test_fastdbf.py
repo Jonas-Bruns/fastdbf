@@ -43,9 +43,9 @@ def test_create_write_and_read_roundtrip(tmp_path: Path) -> None:
 
 def test_create_table_helper_and_structure(tmp_path: Path) -> None:
     path = tmp_path / "numbers.dbf"
-    table = fastdbf.create_table(
+    table = fastdbf.Table(
+        str(path),
         "id N(10,0); label C(20)",
-        filename=str(path),
         on_disk=False,
         dbf_type="db3",
     )

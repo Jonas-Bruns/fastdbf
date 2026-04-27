@@ -2,6 +2,7 @@ use crate::error::{Error, Result};
 use crate::value::{Date, Value};
 
 pub const FIELD_FLAG_NULLABLE: u8 = 0x02;
+pub const FIELD_FLAG_BINARY: u8 = 0x04;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DbfKind {
@@ -158,6 +159,10 @@ impl FieldDescriptor {
 
     pub fn is_nullable(&self) -> bool {
         self.flags & FIELD_FLAG_NULLABLE != 0
+    }
+
+    pub fn is_binary(&self) -> bool {
+        self.flags & FIELD_FLAG_BINARY != 0
     }
 }
 

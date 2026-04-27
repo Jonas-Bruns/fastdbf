@@ -53,66 +53,7 @@ table = fastdbf.Table(
 table.open()
 ```
 
-### `fastdbf.open_table(path)`
 
-Open an existing DBF file and return a `Table`.
-
-Example:
-
-```python
-table = fastdbf.open_table("input.dbf")
-print(table.record_count)
-```
-
-### `fastdbf.read_dbf(path)`
-
-Read a DBF file and return all rows as a Python list of dictionaries.
-
-Example:
-
-```python
-rows = fastdbf.read_dbf("input.dbf")
-for row in rows:
-    print(row)
-```
-
-### `fastdbf.field_names(table)`
-
-Return the field names for a `Table`.
-
-Example:
-
-```python
-names = fastdbf.field_names(table)
-print(names)
-```
-
-
-### `fastdbf.table_type(path)`
-
-Return a tuple of `(version_byte, kind_name)` for a DBF file.
-
-Example:
-
-```python
-version, kind = fastdbf.table_type("input.dbf")
-print(version, kind)
-```
-
-### `fastdbf.create_table(field_specs, filename=":memory:", on_disk=False, dbf_type=None)`
-
-Convenience constructor for a new table.
-
-Example:
-
-```python
-table = fastdbf.create_table(
-    "name C(25); age N(3,0)",
-    filename="people.dbf",
-    on_disk=False,
-    dbf_type="db3",
-)
-```
 
 ## `Table` Properties
 
