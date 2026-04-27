@@ -19,11 +19,11 @@ print(f"Original header_length = {hl_orig}")
 with fastdbf.Table("roundtrip_in.dbf", dbf_type="vfp").open("r") as inp:
     field_specs = []
     for field in inp.fields():
-        code     = field["type_code"]
-        nullable = " null"   if field["nullable"] else ""
-        binary   = " BINARY" if field["binary"]   else ""
-        name     = field["name"]
-        length   = field["length"]
+        code = field["type_code"]
+        nullable = " null" if field["nullable"] else ""
+        binary = " BINARY" if field["binary"] else ""
+        name = field["name"]
+        length = field["length"]
         decimals = field["decimals"]
         if code == "C":
             field_specs.append(f"{name} C({length}){nullable}{binary}")

@@ -65,8 +65,12 @@ impl FieldSpec {
             decimals: self.decimals,
             flags: {
                 let mut f = 0;
-                if self.nullable { f |= FIELD_FLAG_NULLABLE; }
-                if self.binary { f |= crate::header::FIELD_FLAG_BINARY; }
+                if self.nullable {
+                    f |= FIELD_FLAG_NULLABLE;
+                }
+                if self.binary {
+                    f |= crate::header::FIELD_FLAG_BINARY;
+                }
                 f
             },
             nullable_index: None,

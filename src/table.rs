@@ -171,7 +171,7 @@ impl Table {
                     FieldType::Float => {
                         format!("{} F({},{})", field.name, field.length, field.decimals)
                     }
-                    FieldType::Date    => format!("{} D", field.name),
+                    FieldType::Date => format!("{} D", field.name),
                     FieldType::Logical => format!("{} L", field.name),
                     // Fixed-size types: include decimals only when non-zero so that
                     // the spec string round-trips faithfully through parse_type_part.
@@ -203,7 +203,7 @@ impl Table {
                             format!("{} Y", field.name)
                         }
                     }
-                    FieldType::Memo    => format!("{} M", field.name),
+                    FieldType::Memo => format!("{} M", field.name),
                     FieldType::General => format!("{} G", field.name),
                     FieldType::Picture => format!("{} P", field.name),
                     FieldType::NullFlags => format!("{} 0", field.name),

@@ -57,7 +57,11 @@ impl DbfKind {
 
     /// Extra bytes written between the header terminator and the first record.
     pub const fn backlink_size(self) -> u16 {
-        if self.is_vfp() { VFP_BACKLINK_SIZE } else { 0 }
+        if self.is_vfp() {
+            VFP_BACKLINK_SIZE
+        } else {
+            0
+        }
     }
 }
 

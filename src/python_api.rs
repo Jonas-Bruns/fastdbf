@@ -333,10 +333,12 @@ impl PyTable {
                         let decimals = dict.get_item("decimals")?.unwrap().extract::<u8>()?;
                         let nullable = dict.get_item("nullable")?.unwrap().extract::<bool>()?;
                         let binary = dict.get_item("binary")?.unwrap().extract::<bool>()?;
-                        
-                        let field_type = crate::header::FieldType::from_byte(type_code.as_bytes().first().copied().unwrap_or(b'C'))
-                            .map_err(to_py_error)?;
-                            
+
+                        let field_type = crate::header::FieldType::from_byte(
+                            type_code.as_bytes().first().copied().unwrap_or(b'C'),
+                        )
+                        .map_err(to_py_error)?;
+
                         list.push(crate::spec::FieldSpec {
                             name,
                             field_type,
@@ -348,7 +350,9 @@ impl PyTable {
                     }
                     list
                 } else {
-                    return Err(PyValueError::new_err("field_specs must be a string or a list of dicts"));
+                    return Err(PyValueError::new_err(
+                        "field_specs must be a string or a list of dicts",
+                    ));
                 };
 
                 Table::from_specs(parsed_specs, kind).map_err(to_py_error)?
@@ -906,7 +910,9 @@ fn dbf_type_to_kind(dbf_type: Option<&str>) -> PyResult<Option<crate::header::Db
             "db3_memo" | "dbase3withmemo" => Ok(Some(crate::header::DbfKind::DBase3WithMemo)),
             "fp" | "foxpro2withmemo" => Ok(Some(crate::header::DbfKind::FoxPro2WithMemo)),
             "vfp" | "visualfoxpro" => Ok(Some(crate::header::DbfKind::VisualFoxPro)),
-            "vfp_auto" | "visualfoxproautoincrement" => Ok(Some(crate::header::DbfKind::VisualFoxProAutoIncrement)),
+            "vfp_auto" | "visualfoxproautoincrement" => {
+                Ok(Some(crate::header::DbfKind::VisualFoxProAutoIncrement))
+            }
             "vfp_var" | "visualfoxprovar" => Ok(Some(crate::header::DbfKind::VisualFoxProVar)),
             "db4" | "dbase4withmemo" => Ok(Some(crate::header::DbfKind::DBase4WithMemo)),
             other => Err(PyValueError::new_err(format!(
@@ -920,13 +926,13 @@ fn field_spec_string(info: &FieldDescriptor) -> String {
     use crate::header::FieldType;
     match info.field_type {
         FieldType::Character => format!("{} C({})", info.name, info.length),
-        FieldType::Numeric   => format!("{} N({},{})", info.name, info.length, info.decimals),
-        FieldType::Float     => format!("{} F({},{})", info.name, info.length, info.decimals),
-        FieldType::Date      => format!("{} D", info.name),
-        FieldType::Logical   => format!("{} L", info.name),
-        FieldType::Memo      => format!("{} M", info.name),
-        FieldType::General   => format!("{} G", info.name),
-        FieldType::Picture   => format!("{} P", info.name),
+        FieldType::Numeric => format!("{} N({},{})", info.name, info.length, info.decimals),
+        FieldType::Float => format!("{} F({},{})", info.name, info.length, info.decimals),
+        FieldType::Date => format!("{} D", info.name),
+        FieldType::Logical => format!("{} L", info.name),
+        FieldType::Memo => format!("{} M", info.name),
+        FieldType::General => format!("{} G", info.name),
+        FieldType::Picture => format!("{} P", info.name),
         FieldType::NullFlags => format!("{} 0", info.name),
         // Fixed-size types: include length+decimals only when decimals > 0
         FieldType::Integer => {
