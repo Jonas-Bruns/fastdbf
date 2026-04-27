@@ -319,7 +319,7 @@ impl Table {
         }
         if let Some(null_flags) = self.null_flags {
             file.write_all(&encode_field_descriptor(&FieldDescriptor {
-                name: "_NULLFLAGS".to_string(),
+                name: "_NullFlags".to_string(),
                 field_type: FieldType::NullFlags,
                 offset: null_flags.offset,
                 length: null_flags.length,
