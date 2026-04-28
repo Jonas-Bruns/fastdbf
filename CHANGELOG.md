@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2
+
+- CI/CD: Final verification of PyPI deployment.
+
 ## 0.4.1
 
 - CI/CD: Enable automated GitHub Releases and PyPI deployment.
