@@ -8,6 +8,8 @@ use crate::memo::MemoFile;
 use crate::record::Record;
 use crate::spec::FieldSpec;
 use crate::value::{Date, DateTime, Value};
+use std::sync::Mutex;
+use rayon::prelude::*;
 
 pub const CLOSED: &str = "closed";
 pub const READ_ONLY: &str = "read_only";
@@ -33,17 +35,19 @@ struct NullFlagLayout {
 impl Table {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let mut file = File::open(&path)?;
-        let mut raw_header = [0u8; 32];
-        file.read_exact(&mut raw_header)?;
+        let file = File::open(&path)?;
+        let mmap = unsafe { memmap2::Mmap::map(&file)? };
 
-        let kind = DbfKind::from_version(raw_header[0])?;
-        let update = decode_update_date(raw_header[1], raw_header[2], raw_header[3]);
-        let record_count =
-            u32::from_le_bytes([raw_header[4], raw_header[5], raw_header[6], raw_header[7]]);
-        let header_length = u16::from_le_bytes([raw_header[8], raw_header[9]]);
-        let record_length = u16::from_le_bytes([raw_header[10], raw_header[11]]);
-        let code_page = CodePageMark(raw_header[29]);
+        if mmap.len() < 32 {
+            return Err(Error::InvalidFormat("File too short".to_string()));
+        }
+
+        let kind = DbfKind::from_version(mmap[0])?;
+        let update = decode_update_date(mmap[1], mmap[2], mmap[3]);
+        let record_count = u32::from_le_bytes([mmap[4], mmap[5], mmap[6], mmap[7]]);
+        let header_length = u16::from_le_bytes([mmap[8], mmap[9]]);
+        let record_length = u16::from_le_bytes([mmap[10], mmap[11]]);
+        let code_page = CodePageMark(mmap[29]);
 
         if header_length < 33 {
             return Err(Error::InvalidFormat(format!(
@@ -63,9 +67,9 @@ impl Table {
         let mut memo_file = MemoFile::open_alongside(&path, header.kind)?;
         let encoding = crate::codepage::encoding_for_mark(header.code_page.0);
 
-        let (fields, null_flags) = read_field_descriptors(&mut file, &header)?;
+        let (fields, null_flags) = read_field_descriptors(&mmap, &header)?;
         let records = read_records(
-            &mut file,
+            &mmap,
             &header,
             &fields,
             null_flags,
@@ -73,9 +77,6 @@ impl Table {
             encoding,
         )?;
 
-        // The header's record_count may not match the actual number of records in
-        // truncated or otherwise corrupt files. Sync it so callers get a consistent
-        // view and so write_to_path() doesn't encode a stale value.
         let mut header = header;
         header.record_count = records.len() as u32;
 
@@ -377,16 +378,20 @@ impl Table {
 }
 
 fn read_field_descriptors(
-    file: &mut File,
+    data: &[u8],
     header: &Header,
 ) -> Result<(Vec<FieldDescriptor>, Option<NullFlagLayout>)> {
     let field_count = ((header.header_length as usize) - 33) / 32;
     let mut fields = Vec::with_capacity(field_count);
     let mut null_flags = None;
     let mut nullable_index = 0usize;
-    for _ in 0..field_count {
-        let mut raw = [0u8; 32];
-        file.read_exact(&mut raw)?;
+    for i in 0..field_count {
+        let start = 32 + i * 32;
+        let end = start + 32;
+        if end > data.len() {
+            break;
+        }
+        let raw = &data[start..end];
         if raw[0] == 0x0D {
             break;
         }
@@ -420,52 +425,65 @@ fn read_field_descriptors(
             nullable_index: nullable_index_for_field,
         });
     }
-    file.seek(SeekFrom::Start(header.header_length as u64))?;
     Ok((fields, null_flags))
 }
 
 fn read_records(
-    file: &mut File,
+    data: &[u8],
     header: &Header,
     fields: &[FieldDescriptor],
     null_flags: Option<NullFlagLayout>,
-    mut memo_file: Option<&mut MemoFile>,
+    memo_file: Option<&mut MemoFile>,
     encoding: Option<&'static encoding_rs::Encoding>,
 ) -> Result<Vec<Record>> {
-    let mut records = Vec::with_capacity(header.record_count as usize);
-    for _ in 0..header.record_count {
-        let mut raw = vec![0u8; header.record_length as usize];
-        match file.read_exact(&mut raw) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(error) => return Err(error.into()),
-        }
-        let deleted = matches!(raw[0], b'*');
-        let mut values = Vec::with_capacity(fields.len());
-        let null_bits = null_flags.map(|layout| {
-            let start = layout.offset as usize;
-            let end = start + layout.length as usize;
-            raw[start..end].to_vec()
-        });
-        for field in fields {
-            let start = field.offset as usize;
-            let end = start + field.length as usize;
-            let is_null = field
-                .nullable_index
-                .zip(null_bits.as_ref())
-                .map(|(index, bytes)| null_bit_is_set(bytes, index))
-                .unwrap_or(false);
-            values.push(parse_value(
-                field,
-                &raw[start..end],
-                is_null,
-                memo_file.as_deref_mut(),
-                encoding,
-            )?);
-        }
-        records.push(Record::from_values(deleted, values));
-    }
-    Ok(records)
+    let records_data = &data[header.header_length as usize..];
+    let record_len = header.record_length as usize;
+    let record_count = header.record_count as usize;
+
+    let memo_mutex = memo_file.map(Mutex::new);
+
+    (0..record_count)
+        .into_par_iter()
+        .map(|i| {
+            let start = i * record_len;
+            let end = start + record_len;
+            if end > records_data.len() {
+                return Err(Error::InvalidFormat("Unexpected EOF".to_string()));
+            }
+            let raw = &records_data[start..end];
+            let deleted = matches!(raw[0], b'*');
+            
+            let null_bits = null_flags.map(|layout| {
+                let s = layout.offset as usize;
+                let e = s + layout.length as usize;
+                raw[s..e].to_vec()
+            });
+
+            let mut values = Vec::with_capacity(fields.len());
+            for field in fields {
+                let s = field.offset as usize;
+                let e = s + field.length as usize;
+                let is_null = field
+                    .nullable_index
+                    .zip(null_bits.as_ref())
+                    .map(|(index, bytes)| null_bit_is_set(bytes, index))
+                    .unwrap_or(false);
+
+                let mut memo_guard = memo_mutex.as_ref().map(|m| m.lock().unwrap());
+                let memo_ref = memo_guard.as_mut().map(|g| &mut ***g);
+
+                let val = parse_value(
+                    field,
+                    &raw[s..e],
+                    is_null,
+                    memo_ref,
+                    encoding,
+                )?;
+                values.push(val);
+            }
+            Ok(Record::from_values(deleted, values))
+        })
+        .collect()
 }
 
 fn parse_value(
