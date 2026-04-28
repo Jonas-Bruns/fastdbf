@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0
+
+- Feature: Zero-copy data transfer using Apache Arrow. Added `to_arrow()` and `extend_arrow()` for lightning-fast Arrow RecordBatches.
+
 ## 0.2.1
 
 - Performance: Parallelized DBF reading using `memmap2` and `rayon`, enabling multi-core record parsing.
