@@ -7,6 +7,8 @@ use crate::header::FieldDescriptor;
 use crate::record::Record;
 use crate::table::{Table, CLOSED, IN_MEMORY, ON_DISK, READ_ONLY, READ_WRITE};
 use crate::value::{Date, DateTime, Value};
+use std::sync::Arc;
+use pyo3_arrow::PyRecordBatch;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TableStatus / TableLocation enums (unchanged)
@@ -534,6 +536,288 @@ impl PyTable {
             }
             Ok(())
         })?;
+
+        for record in records {
+            self.inner.push_record(record).map_err(to_py_error)?;
+        }
+
+        Ok(())
+    }
+
+    fn to_arrow(&self) -> PyResult<PyRecordBatch> {
+        self.require_open()?;
+        let records = self.inner.records();
+        let fields = self.inner.fields();
+
+        let mut arrow_fields = Vec::with_capacity(fields.len() + 1);
+        let mut arrow_arrays = Vec::with_capacity(fields.len() + 1);
+
+        for (col_idx, field) in fields.iter().enumerate() {
+            use crate::header::FieldType;
+            let dt = match field.field_type {
+                FieldType::Character => arrow::datatypes::DataType::Utf8,
+                FieldType::Numeric | FieldType::Float | FieldType::Double | FieldType::Currency => {
+                    arrow::datatypes::DataType::Float64
+                }
+                FieldType::Logical => arrow::datatypes::DataType::Boolean,
+                FieldType::Integer => arrow::datatypes::DataType::Int32,
+                FieldType::Date | FieldType::DateTime | FieldType::Memo => {
+                    arrow::datatypes::DataType::Utf8
+                }
+                FieldType::General | FieldType::Picture => arrow::datatypes::DataType::Binary,
+                FieldType::NullFlags => continue,
+            };
+
+            arrow_fields.push(arrow::datatypes::Field::new(
+                field.name.clone(),
+                dt.clone(),
+                true,
+            ));
+
+            let array: arrow::array::ArrayRef = match field.field_type {
+                FieldType::Character | FieldType::Memo => {
+                    let mut builder = arrow::array::StringBuilder::with_capacity(records.len(), records.len() * 10);
+                    for record in records {
+                        match &record.values()[col_idx] {
+                            Value::Character(s) => builder.append_value(s),
+                            Value::Memo(bytes) => {
+                                let text = crate::codepage::decode_bytes(bytes, self.encoding);
+                                builder.append_value(text);
+                            }
+                            Value::Null => builder.append_null(),
+                            _ => builder.append_null(),
+                        }
+                    }
+                    Arc::new(builder.finish())
+                }
+                FieldType::Numeric | FieldType::Float | FieldType::Double => {
+                    let mut builder = arrow::array::Float64Builder::with_capacity(records.len());
+                    for record in records {
+                        match &record.values()[col_idx] {
+                            Value::Numeric(n) | Value::Double(n) => builder.append_value(*n),
+                            Value::Integer(i) => builder.append_value(*i as f64),
+                            Value::Null => builder.append_null(),
+                            _ => builder.append_null(),
+                        }
+                    }
+                    Arc::new(builder.finish())
+                }
+                FieldType::Currency => {
+                    let mut builder = arrow::array::Float64Builder::with_capacity(records.len());
+                    for record in records {
+                        match &record.values()[col_idx] {
+                            Value::Currency(n) => builder.append_value(*n as f64),
+                            Value::Null => builder.append_null(),
+                            _ => builder.append_null(),
+                        }
+                    }
+                    Arc::new(builder.finish())
+                }
+                FieldType::Logical => {
+                    let mut builder = arrow::array::BooleanBuilder::with_capacity(records.len());
+                    for record in records {
+                        match &record.values()[col_idx] {
+                            Value::Logical(Some(b)) => builder.append_value(*b),
+                            Value::Logical(None) | Value::Null => builder.append_null(),
+                            _ => builder.append_null(),
+                        }
+                    }
+                    Arc::new(builder.finish())
+                }
+                FieldType::Integer => {
+                    let mut builder = arrow::array::Int32Builder::with_capacity(records.len());
+                    for record in records {
+                        match &record.values()[col_idx] {
+                            Value::Integer(i) => builder.append_value(*i),
+                            Value::Null => builder.append_null(),
+                            _ => builder.append_null(),
+                        }
+                    }
+                    Arc::new(builder.finish())
+                }
+                FieldType::Date => {
+                    let mut builder = arrow::array::StringBuilder::with_capacity(records.len(), records.len() * 10);
+                    for record in records {
+                        match &record.values()[col_idx] {
+                            Value::Date(Some(d)) => builder.append_value(date_to_iso(*d)),
+                            Value::Date(None) | Value::Null => builder.append_null(),
+                            _ => builder.append_null(),
+                        }
+                    }
+                    Arc::new(builder.finish())
+                }
+                FieldType::DateTime => {
+                    let mut builder = arrow::array::StringBuilder::with_capacity(records.len(), records.len() * 20);
+                    for record in records {
+                        match &record.values()[col_idx] {
+                            Value::DateTime(Some(d)) => builder.append_value(datetime_to_iso(*d)),
+                            Value::DateTime(None) | Value::Null => builder.append_null(),
+                            _ => builder.append_null(),
+                        }
+                    }
+                    Arc::new(builder.finish())
+                }
+                FieldType::General | FieldType::Picture => {
+                    let mut builder = arrow::array::BinaryBuilder::with_capacity(records.len(), records.len() * 10);
+                    for record in records {
+                        match &record.values()[col_idx] {
+                            Value::Binary(bytes) => builder.append_value(bytes),
+                            Value::Null => builder.append_null(),
+                            _ => builder.append_null(),
+                        }
+                    }
+                    Arc::new(builder.finish())
+                }
+                FieldType::NullFlags => unreachable!(),
+            };
+            arrow_arrays.push(array);
+        }
+
+        // Add _deleted column
+        arrow_fields.push(arrow::datatypes::Field::new(
+            "_deleted".to_string(),
+            arrow::datatypes::DataType::Boolean,
+            false,
+        ));
+        let mut deleted_builder = arrow::array::BooleanBuilder::with_capacity(records.len());
+        for record in records {
+            deleted_builder.append_value(record.is_deleted());
+        }
+        arrow_arrays.push(Arc::new(deleted_builder.finish()));
+
+        let schema = Arc::new(arrow::datatypes::Schema::new(arrow_fields));
+        let batch = arrow::record_batch::RecordBatch::try_new(schema, arrow_arrays)
+            .map_err(|e| PyRuntimeError::new_err(format!("Arrow error: {e}")))?;
+
+        Ok(PyRecordBatch::new(batch))
+    }
+
+    fn extend_arrow(&mut self, py_batch: PyRecordBatch) -> PyResult<()> {
+        self.require_read_write()?;
+        let batch: arrow::record_batch::RecordBatch = py_batch.into();
+        let fields = self.inner.fields();
+        let len = batch.num_rows();
+
+        let mut records = Vec::with_capacity(len);
+        let mut casted_columns = Vec::with_capacity(fields.len());
+        let schema = batch.schema();
+
+        for field in fields {
+            use crate::header::FieldType;
+            let target_dt = match field.field_type {
+                FieldType::Character => arrow::datatypes::DataType::Utf8,
+                FieldType::Numeric | FieldType::Float | FieldType::Double | FieldType::Currency => {
+                    arrow::datatypes::DataType::Float64
+                }
+                FieldType::Logical => arrow::datatypes::DataType::Boolean,
+                FieldType::Integer => arrow::datatypes::DataType::Int32,
+                FieldType::Date | FieldType::DateTime | FieldType::Memo => {
+                    arrow::datatypes::DataType::Utf8
+                }
+                FieldType::General | FieldType::Picture => arrow::datatypes::DataType::Binary,
+                FieldType::NullFlags => continue,
+            };
+
+            let col = schema.column_with_name(&field.name).map(|(idx, _)| batch.column(idx).clone());
+            let casted_col = if let Some(c) = col {
+                if c.data_type() != &target_dt {
+                    arrow::compute::cast(&c, &target_dt)
+                        .map_err(|e| PyValueError::new_err(format!("Failed to cast column {}: {}", field.name, e)))?
+                } else {
+                    c
+                }
+            } else {
+                arrow::array::new_null_array(&target_dt, len)
+            };
+            casted_columns.push(casted_col);
+        }
+
+        let deleted_col = schema.column_with_name("_deleted")
+            .map(|(idx, _)| batch.column(idx).clone());
+        let casted_deleted = if let Some(c) = deleted_col {
+            if c.data_type() != &arrow::datatypes::DataType::Boolean {
+                arrow::compute::cast(&c, &arrow::datatypes::DataType::Boolean)
+                    .map_err(|e| PyValueError::new_err(format!("Failed to cast _deleted column: {}", e)))?
+            } else {
+                c
+            }
+        } else {
+            arrow::array::new_null_array(&arrow::datatypes::DataType::Boolean, len)
+        };
+
+        for row_idx in 0..len {
+            let mut values = Vec::with_capacity(fields.len());
+            for (col_idx, field) in fields.iter().enumerate() {
+                let col = &casted_columns[col_idx];
+                let val = if col.is_null(row_idx) {
+                    Value::Null
+                } else {
+                    use arrow::array::*;
+                    use crate::header::FieldType;
+                    match field.field_type {
+                        FieldType::Character | FieldType::Memo => {
+                            let array = col.as_any().downcast_ref::<StringArray>().unwrap();
+                            Value::Character(array.value(row_idx).to_string())
+                        }
+                        FieldType::Numeric | FieldType::Float | FieldType::Double | FieldType::Currency => {
+                            let array = col.as_any().downcast_ref::<Float64Array>().unwrap();
+                            Value::Numeric(array.value(row_idx))
+                        }
+                        FieldType::Logical => {
+                            let array = col.as_any().downcast_ref::<BooleanArray>().unwrap();
+                            Value::Logical(Some(array.value(row_idx)))
+                        }
+                        FieldType::Integer => {
+                            let array = col.as_any().downcast_ref::<Int32Array>().unwrap();
+                            Value::Integer(array.value(row_idx))
+                        }
+                        FieldType::Date => {
+                            let array = col.as_any().downcast_ref::<StringArray>().unwrap();
+                            let s = array.value(row_idx);
+                            match crate::value::Date::parse_ymd(&s.replace("-", "")) {
+                                Ok(Some(d)) => Value::Date(Some(d)),
+                                _ => Value::Null,
+                            }
+                        }
+                        FieldType::DateTime => {
+                            let array = col.as_any().downcast_ref::<StringArray>().unwrap();
+                            let s = array.value(row_idx);
+                            let parts = s.split('T').collect::<Vec<_>>();
+                            if parts.len() == 2 {
+                                let date_str = parts[0].replace("-", "");
+                                let time_str = parts[1];
+                                if let Ok(Some(date)) = crate::value::Date::parse_ymd(&date_str) {
+                                    if let Ok(dt) = iso_datetime_parts_to_vfp(date, time_str) {
+                                        Value::DateTime(Some(dt))
+                                    } else {
+                                        Value::Null
+                                    }
+                                } else {
+                                    Value::Null
+                                }
+                            } else {
+                                Value::Null
+                            }
+                        }
+                        FieldType::General | FieldType::Picture => {
+                            let array = col.as_any().downcast_ref::<BinaryArray>().unwrap();
+                            Value::Binary(array.value(row_idx).to_vec())
+                        }
+                        FieldType::NullFlags => unreachable!(),
+                    }
+                };
+                values.push(val);
+            }
+
+            let deleted = if casted_deleted.is_null(row_idx) {
+                false
+            } else {
+                let array = casted_deleted.as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
+                array.value(row_idx)
+            };
+
+            records.push(Record::from_values(deleted, values));
+        }
 
         for record in records {
             self.inner.push_record(record).map_err(to_py_error)?;
