@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- Fix: Correctly map Double and Currency fields in `extend_arrow` (fixing type mismatch error during write).
+
 ## 0.3.0
 
 - Feature: Zero-copy data transfer using Apache Arrow. Added `to_arrow()` and `extend_arrow()` for lightning-fast Arrow RecordBatches.

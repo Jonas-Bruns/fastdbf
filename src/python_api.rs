@@ -759,9 +759,17 @@ impl PyTable {
                             let array = col.as_any().downcast_ref::<StringArray>().unwrap();
                             Value::Character(array.value(row_idx).to_string())
                         }
-                        FieldType::Numeric | FieldType::Float | FieldType::Double | FieldType::Currency => {
+                        FieldType::Numeric | FieldType::Float => {
                             let array = col.as_any().downcast_ref::<Float64Array>().unwrap();
                             Value::Numeric(array.value(row_idx))
+                        }
+                        FieldType::Double => {
+                            let array = col.as_any().downcast_ref::<Float64Array>().unwrap();
+                            Value::Double(array.value(row_idx))
+                        }
+                        FieldType::Currency => {
+                            let array = col.as_any().downcast_ref::<Float64Array>().unwrap();
+                            Value::Currency(array.value(row_idx) as i64)
                         }
                         FieldType::Logical => {
                             let array = col.as_any().downcast_ref::<BooleanArray>().unwrap();
