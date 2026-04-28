@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+- Performance: Parallelized DBF reading using `memmap2` and `rayon`, enabling multi-core record parsing.
+
 ## 0.2.0
 
 - Feature: Added `to_columns()` and `extend_columns()` methods to `PyTable` for high-performance bulk data transfer with Pandas (columnar I/O).

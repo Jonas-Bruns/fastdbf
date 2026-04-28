@@ -56,7 +56,7 @@ dependencies = [
 
 [[package]]
 name = "fastdbf"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "encoding_rs",
  "memmap2",
