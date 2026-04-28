@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1
+
+- CI/CD: Enable automated GitHub Releases and PyPI deployment.
+
 ## 0.4.0
 
 - **Breaking Change**: Removed `on_disk` parameter. Files are now always flushed to disk on close.
