@@ -8,7 +8,6 @@ def test_create_write_and_read_roundtrip(tmp_path: Path) -> None:
     table = fastdbf.Table(
         str(path),
         "name C(25) null; age N(3,0) null; birth D null; active L null",
-        on_disk=False,
         dbf_type="vfp",
     )
     table.open()
@@ -28,7 +27,6 @@ def test_create_write_and_read_roundtrip(tmp_path: Path) -> None:
             "ACTIVE": None,
         }
     )
-    table.write(str(path))
     table.close()
 
     reopened = fastdbf.Table(str(path))
@@ -46,14 +44,12 @@ def test_create_table_helper_and_structure(tmp_path: Path) -> None:
     table = fastdbf.Table(
         str(path),
         "id N(10,0); label C(20)",
-        on_disk=False,
         dbf_type="db3",
     )
     table.open()
     table.append((1, "one"))
     assert "ID N(10,0)" in table.structure()
     assert table.structure("LABEL") == "LABEL C(20)"
-    table.write(str(path))
     table.close()
 
 
@@ -62,7 +58,6 @@ def test_memo_read_write(tmp_path: Path) -> None:
     table = fastdbf.Table(
         str(path),
         "id N(3,0); notes M null",
-        on_disk=False,
         dbf_type="vfp",
     )
     table.open()
@@ -71,7 +66,6 @@ def test_memo_read_write(tmp_path: Path) -> None:
     )
     table.append({"ID": 2, "NOTES": None})
     table.append({"ID": 3, "NOTES": "Another note."})
-    table.write(str(path))
     table.close()
 
     # Verify the companion file exists

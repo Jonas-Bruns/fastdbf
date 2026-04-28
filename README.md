@@ -66,21 +66,17 @@ Read an existing DBF file:
 ```python
 import fastdbf
 
-table = fastdbf.Table("people.dbf")
-table.open()
+with fastdbf.Table("people.dbf").open("r") as table:
+    print(table.kind)
+    print(table.field_names)
+    print(table.record_count)
+    print(table.row(0))
 
-print(table.kind)
-print(table.field_names)
-print(table.record_count)
-print(table.row(0))
+    for field in table.fields():
+        print(field["name"], field["type_code"], field["nullable"])
 
-for field in table.fields():
-    print(field["name"], field["type_code"], field["nullable"])
-
-for row in table:
-    print(row)
-
-table.close()
+    for row in table:
+        print(row)
 ```
 
 Create and write a new DBF file:
@@ -88,30 +84,21 @@ Create and write a new DBF file:
 ```python
 import fastdbf
 
-table = fastdbf.Table(
-    "people.dbf",
-    "name C(25) null; age N(3,0) null; birth D null; active L null",
-    on_disk=False,
-    dbf_type="vfp",
-)
-table.open()
+specs = "name C(25) null; age N(3,0) null; birth D null; active L null"
+with fastdbf.Table("people.dbf", specs, dbf_type="vfp") as table:
+    table.append({
+        "NAME": "Spunky",
+        "AGE": 23,
+        "BIRTH": "1989-07-23",
+        "ACTIVE": True,
+    })
 
-table.append({
-    "NAME": "Spunky",
-    "AGE": 23,
-    "BIRTH": "1989-07-23",
-    "ACTIVE": True,
-})
-
-table.append({
-    "NAME": None,
-    "AGE": None,
-    "BIRTH": None,
-    "ACTIVE": None,
-})
-
-table.write("people.dbf")
-table.close()
+    table.append({
+        "NAME": None,
+        "AGE": None,
+        "BIRTH": None,
+        "ACTIVE": None,
+    })
 ```
 
 
@@ -145,40 +132,96 @@ Nullable fields should be used with `dbf_type="vfp"` for Visual FoxPro-compatibl
 import pandas as pd
 import fastdbf
 
-table = fastdbf.Table("input.dbf")
-table.open()
+with fastdbf.Table("input.dbf").open("r") as table:
+    df = pd.DataFrame(list(table))
+    df["NAME"] = df["NAME"].str.upper()
 
-df = pd.DataFrame(list(table))
-df["NAME"] = df["NAME"].str.upper()
+    field_specs = []
+    for field in table.fields():
+        code = field["type_code"]
+        nullable = " null" if field["nullable"] else ""
+        if code == "C":
+            field_specs.append(f'{field["name"]} C({field["length"]}){nullable}')
+        elif code in ("N", "F"):
+            field_specs.append(
+                f'{field["name"]} {code}({field["length"]},{field["decimals"]}){nullable}'
+            )
+        else:
+            field_specs.append(f'{field["name"]} {code}{nullable}')
 
-field_specs = []
-for field in table.fields():
-    code = field["type_code"]
-    nullable = " null" if field["nullable"] else ""
-    if code == "C":
-        field_specs.append(f'{field["name"]} C({field["length"]}){nullable}')
-    elif code in ("N", "F"):
-        field_specs.append(
-            f'{field["name"]} {code}({field["length"]},{field["decimals"]}){nullable}'
-        )
-    else:
-        field_specs.append(f'{field["name"]} {code}{nullable}')
+dbf_type = "vfp" if any(f["nullable"] for f in table.fields()) else "db3"
+specs = "; ".join(field_specs)
 
-out = fastdbf.Table(
-    "output.dbf",
-    "; ".join(field_specs),
-    on_disk=False,
-    dbf_type="vfp" if any(f["nullable"] for f in table.fields()) else "db3",
-)
-out.open()
-
-for row in df.to_dict(orient="records"):
-    out.append(row)
-
-out.write("output.dbf")
-out.close()
-table.close()
+with fastdbf.Table("output.dbf", specs, dbf_type=dbf_type) as out:
+    for row in df.to_dict(orient="records"):
+        out.append(row)
 ```
+
+## Performance & Columnar I/O (Arrow)
+
+For maximum performance, especially with large datasets, `fastdbf` provides columnar read/write interfaces that avoid the high overhead of Python object allocation.
+
+### 1. Apache Arrow Interface (Zero-Copy) — **Fastest**
+Leverages the Arrow PyCapsule Interface to exchange data directly between Rust and Pandas / Polars / PyArrow without copying.
+
+**Read into Pandas via Arrow:**
+```python
+import fastdbf
+import pyarrow as pa
+
+with fastdbf.Table("data.dbf").open("r") as table:
+    # Arrow Batch -> Pandas DataFrame
+    df = pa.Table.from_batches([pa.record_batch(table.to_arrow())]).to_pandas()
+```
+
+**Write from Pandas via Arrow:**
+```python
+import fastdbf
+import pyarrow as pa
+
+# Create Arrow batch from DataFrame
+batch = pa.RecordBatch.from_pandas(df)
+
+with fastdbf.Table("output.dbf", field_specs="NAME C(20); AGE N(10,2)") as table:
+    table.extend_arrow(batch)
+```
+
+### 2. Columnar Interface (`to_columns`, `extend_columns`)
+Reads/writes data as a dictionary of lists (one list per column). Faster than row-by-row processing but still bound by GIL limits.
+
+**Bulk Columnar Read:**
+```python
+import pandas as pd
+import fastdbf
+
+with fastdbf.Table("data.dbf").open("r") as table:
+    cols = table.to_columns()
+    df = pd.DataFrame(cols)
+```
+
+**Bulk Columnar Write:**
+```python
+import pandas as pd
+import fastdbf
+
+# Assuming df ist das Pandas DataFrame
+# Optionale interne Meta-Spalten wie '_deleted' entfernen
+clean_data = {col: df[col].tolist() for col in df.columns if col != "_deleted"}
+
+with fastdbf.Table("output.dbf", field_specs="NAME C(20); AGE N(10,2)") as table:
+    table.extend_columns(clean_data)
+```
+
+---
+
+### Overview: Read/Write Methods compared
+
+| Method | Implementation | Pros |
+| :--- | :--- | :--- |
+| **Row-by-Row** | `table.row()`, `table.append()` | Easiest to use |
+| **Bulk Columnar**| `to_columns()`, `extend_columns()`| No heavy dependencies |
+| **Zero-Copy Arrow**| `to_arrow()`, `extend_arrow()` | Direct memory exchange |
+
 
 ## Documentation
 

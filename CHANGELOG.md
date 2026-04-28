@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+- **Breaking Change**: Removed `on_disk` parameter. Files are now always flushed to disk on close.
+- Performance: Cleaned up unused code, formatted the codebase for standard CI pipelines.
+- Documentation: Added comprehensive performance comparison for row-by-row, columnar, and Arrow I/O.
+
 ## 0.3.1
 
 - Fix: Correctly map Double and Currency fields in `extend_arrow` (fixing type mismatch error during write).

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "fastdbf"
-version = "0.3.1"
+version = "0.4.0"
 description = "A Python package for reading and writing DBF files, powered by a Rust core"
 authors = [{ name = "Jonas Bruns" }]
 requires-python = ">=3.11"

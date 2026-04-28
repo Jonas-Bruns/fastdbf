@@ -37,8 +37,8 @@ t_dbf_vfp.open()
 t_dbf_vfp.close()
 
 # FastDBF
-with fastdbf.Table("vfp_fast.dbf", specs, on_disk=False, dbf_type="vfp") as t_fast_vfp:
-    t_fast_vfp.write("vfp_fast.dbf")
+with fastdbf.Table("vfp_fast.dbf", specs, dbf_type="vfp") as t_fast_vfp:
+    pass
 
 print("=== VFP Header Comparison ===")
 print("dbf package: ", analyze_header("vfp_dbf.dbf"))
@@ -53,8 +53,8 @@ t_dbf_db3.open()
 t_dbf_db3.close()
 
 # FastDBF
-with fastdbf.Table("db3_fast.dbf", specs_db3, on_disk=False, dbf_type="db3") as t_fast_db3:
-    t_fast_db3.write("db3_fast.dbf")
+with fastdbf.Table("db3_fast.dbf", specs_db3, dbf_type="db3") as t_fast_db3:
+    pass
 
 print("\n=== DB3 Header Comparison ===")
 print("dbf package: ", analyze_header("db3_dbf.dbf"))

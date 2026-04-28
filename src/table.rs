@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
@@ -8,8 +8,8 @@ use crate::memo::MemoFile;
 use crate::record::Record;
 use crate::spec::FieldSpec;
 use crate::value::{Date, DateTime, Value};
-use std::sync::Mutex;
 use rayon::prelude::*;
+use std::sync::Mutex;
 
 pub const CLOSED: &str = "closed";
 pub const READ_ONLY: &str = "read_only";
@@ -452,7 +452,7 @@ fn read_records(
             }
             let raw = &records_data[start..end];
             let deleted = matches!(raw[0], b'*');
-            
+
             let null_bits = null_flags.map(|layout| {
                 let s = layout.offset as usize;
                 let e = s + layout.length as usize;
@@ -472,13 +472,7 @@ fn read_records(
                 let mut memo_guard = memo_mutex.as_ref().map(|m| m.lock().unwrap());
                 let memo_ref = memo_guard.as_mut().map(|g| &mut ***g);
 
-                let val = parse_value(
-                    field,
-                    &raw[s..e],
-                    is_null,
-                    memo_ref,
-                    encoding,
-                )?;
+                let val = parse_value(field, &raw[s..e], is_null, memo_ref, encoding)?;
                 values.push(val);
             }
             Ok(Record::from_values(deleted, values))

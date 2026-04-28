@@ -7,8 +7,8 @@ use crate::header::FieldDescriptor;
 use crate::record::Record;
 use crate::table::{Table, CLOSED, IN_MEMORY, ON_DISK, READ_ONLY, READ_WRITE};
 use crate::value::{Date, DateTime, Value};
-use std::sync::Arc;
 use pyo3_arrow::PyRecordBatch;
+use std::sync::Arc;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TableStatus / TableLocation enums (unchanged)
@@ -292,11 +292,10 @@ pub struct PyTable {
 #[pymethods]
 impl PyTable {
     #[new]
-    #[pyo3(signature = (filename, field_specs=None, on_disk=true, dbf_type=None, codepage=None))]
+    #[pyo3(signature = (filename, field_specs=None, dbf_type=None, codepage=None))]
     fn new<'py>(
         filename: String,
         field_specs: Option<&Bound<'py, PyAny>>,
-        on_disk: bool,
         dbf_type: Option<String>,
         codepage: Option<String>,
     ) -> PyResult<Self> {
@@ -369,7 +368,7 @@ impl PyTable {
         Ok(Self {
             inner,
             default_filename: Some(filename),
-            on_disk,
+            on_disk: true,
             status: TableStatus::Closed,
             encoding,
         })
@@ -492,7 +491,10 @@ impl PyTable {
                 let data = list.extract::<Vec<PyObject>>()?;
                 col_data.push(data);
             } else {
-                return Err(PyKeyError::new_err(format!("Missing column: {}", field.name)));
+                return Err(PyKeyError::new_err(format!(
+                    "Missing column: {}",
+                    field.name
+                )));
             }
         }
 
@@ -511,7 +513,9 @@ impl PyTable {
 
         for data in &col_data {
             if data.len() != len {
-                return Err(PyValueError::new_err("All columns must have the same length"));
+                return Err(PyValueError::new_err(
+                    "All columns must have the same length",
+                ));
             }
         }
 
@@ -576,7 +580,10 @@ impl PyTable {
 
             let array: arrow::array::ArrayRef = match field.field_type {
                 FieldType::Character | FieldType::Memo => {
-                    let mut builder = arrow::array::StringBuilder::with_capacity(records.len(), records.len() * 10);
+                    let mut builder = arrow::array::StringBuilder::with_capacity(
+                        records.len(),
+                        records.len() * 10,
+                    );
                     for record in records {
                         match &record.values()[col_idx] {
                             Value::Character(s) => builder.append_value(s),
@@ -636,7 +643,10 @@ impl PyTable {
                     Arc::new(builder.finish())
                 }
                 FieldType::Date => {
-                    let mut builder = arrow::array::StringBuilder::with_capacity(records.len(), records.len() * 10);
+                    let mut builder = arrow::array::StringBuilder::with_capacity(
+                        records.len(),
+                        records.len() * 10,
+                    );
                     for record in records {
                         match &record.values()[col_idx] {
                             Value::Date(Some(d)) => builder.append_value(date_to_iso(*d)),
@@ -647,7 +657,10 @@ impl PyTable {
                     Arc::new(builder.finish())
                 }
                 FieldType::DateTime => {
-                    let mut builder = arrow::array::StringBuilder::with_capacity(records.len(), records.len() * 20);
+                    let mut builder = arrow::array::StringBuilder::with_capacity(
+                        records.len(),
+                        records.len() * 20,
+                    );
                     for record in records {
                         match &record.values()[col_idx] {
                             Value::DateTime(Some(d)) => builder.append_value(datetime_to_iso(*d)),
@@ -658,7 +671,10 @@ impl PyTable {
                     Arc::new(builder.finish())
                 }
                 FieldType::General | FieldType::Picture => {
-                    let mut builder = arrow::array::BinaryBuilder::with_capacity(records.len(), records.len() * 10);
+                    let mut builder = arrow::array::BinaryBuilder::with_capacity(
+                        records.len(),
+                        records.len() * 10,
+                    );
                     for record in records {
                         match &record.values()[col_idx] {
                             Value::Binary(bytes) => builder.append_value(bytes),
@@ -718,11 +734,17 @@ impl PyTable {
                 FieldType::NullFlags => continue,
             };
 
-            let col = schema.column_with_name(&field.name).map(|(idx, _)| batch.column(idx).clone());
+            let col = schema
+                .column_with_name(&field.name)
+                .map(|(idx, _)| batch.column(idx).clone());
             let casted_col = if let Some(c) = col {
                 if c.data_type() != &target_dt {
-                    arrow::compute::cast(&c, &target_dt)
-                        .map_err(|e| PyValueError::new_err(format!("Failed to cast column {}: {}", field.name, e)))?
+                    arrow::compute::cast(&c, &target_dt).map_err(|e| {
+                        PyValueError::new_err(format!(
+                            "Failed to cast column {}: {}",
+                            field.name, e
+                        ))
+                    })?
                 } else {
                     c
                 }
@@ -732,12 +754,14 @@ impl PyTable {
             casted_columns.push(casted_col);
         }
 
-        let deleted_col = schema.column_with_name("_deleted")
+        let deleted_col = schema
+            .column_with_name("_deleted")
             .map(|(idx, _)| batch.column(idx).clone());
         let casted_deleted = if let Some(c) = deleted_col {
             if c.data_type() != &arrow::datatypes::DataType::Boolean {
-                arrow::compute::cast(&c, &arrow::datatypes::DataType::Boolean)
-                    .map_err(|e| PyValueError::new_err(format!("Failed to cast _deleted column: {}", e)))?
+                arrow::compute::cast(&c, &arrow::datatypes::DataType::Boolean).map_err(|e| {
+                    PyValueError::new_err(format!("Failed to cast _deleted column: {}", e))
+                })?
             } else {
                 c
             }
@@ -752,8 +776,8 @@ impl PyTable {
                 let val = if col.is_null(row_idx) {
                     Value::Null
                 } else {
-                    use arrow::array::*;
                     use crate::header::FieldType;
+                    use arrow::array::*;
                     match field.field_type {
                         FieldType::Character | FieldType::Memo => {
                             let array = col.as_any().downcast_ref::<StringArray>().unwrap();
@@ -820,7 +844,10 @@ impl PyTable {
             let deleted = if casted_deleted.is_null(row_idx) {
                 false
             } else {
-                let array = casted_deleted.as_any().downcast_ref::<arrow::array::BooleanArray>().unwrap();
+                let array = casted_deleted
+                    .as_any()
+                    .downcast_ref::<arrow::array::BooleanArray>()
+                    .unwrap();
                 array.value(row_idx)
             };
 
@@ -1029,14 +1056,13 @@ impl PyTable {
 
     // ── new / clone ───────────────────────────────────────────────────
 
-    #[pyo3(signature = (filename=":memory:", default_data_types=None, field_specs=None, on_disk=false, dbf_type=None))]
+    #[pyo3(signature = (filename=":memory:", default_data_types=None, field_specs=None, dbf_type=None))]
     #[pyo3(name = "new")]
     fn clone_like(
         &self,
         filename: &str,
         default_data_types: Option<&Bound<'_, PyAny>>,
         field_specs: Option<String>,
-        on_disk: bool,
         dbf_type: Option<&str>,
     ) -> PyResult<PyTable> {
         if default_data_types.is_some() {
@@ -1055,13 +1081,13 @@ impl PyTable {
             }
             None => self
                 .inner
-                .new_like(filename, dbf_type_to_kind(dbf_type)?, on_disk)
+                .new_like(filename, dbf_type_to_kind(dbf_type)?, true)
                 .map_err(to_py_error)?,
         };
         Ok(PyTable {
             inner: table,
             default_filename: Some(filename.to_string()),
-            on_disk,
+            on_disk: true,
             status: TableStatus::Closed,
             encoding: self.encoding,
         })

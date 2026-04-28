@@ -35,10 +35,8 @@ with fastdbf.Table("roundtrip_in.dbf", dbf_type="vfp").open("r") as inp:
     print("structure():", inp.structure())
 
 # 3. Neue Datei mit fastdbf schreiben
-with fastdbf.Table(
-    "roundtrip_out.dbf", "; ".join(field_specs), on_disk=False, dbf_type="vfp"
-) as out:
-    out.write("roundtrip_out.dbf")
+with fastdbf.Table("roundtrip_out.dbf", "; ".join(field_specs), dbf_type="vfp") as out:
+    pass
 
 with open("roundtrip_out.dbf", "rb") as f:
     raw = f.read(32)

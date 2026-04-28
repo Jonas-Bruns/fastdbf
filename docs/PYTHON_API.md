@@ -12,20 +12,19 @@ import fastdbf
 
 ## Module-Level Functions
 
-### `fastdbf.Table(filename, field_specs=None, on_disk=True, dbf_type=None, codepage=None)`
+### `fastdbf.Table(filename, field_specs=None, dbf_type=None, codepage=None)`
 
 Create a `Table` object.
 
 Behavior:
 
 - If `field_specs` is omitted, the constructor opens an existing DBF file definition from `filename`.
-- If `field_specs` is provided, the constructor creates a new in-memory table structure.
+- If `field_specs` is provided, the constructor creates a new table structure.
 
 Parameters:
 
 - `filename: str`
 - `field_specs: str | None`
-- `on_disk: bool`
 - `dbf_type: str | None`
 - `codepage: str | None`
 
@@ -39,18 +38,14 @@ Supported `dbf_type` values:
 Examples:
 
 ```python
-table = fastdbf.Table("input.dbf")
-table.open()
+with fastdbf.Table("input.dbf").open("r") as table:
+    pass
 ```
 
 ```python
-table = fastdbf.Table(
-    "output.dbf",
-    "name C(25); age N(3,0); birth D",
-    on_disk=False,
-    dbf_type="db3",
-)
-table.open()
+specs = "name C(25); age N(3,0); birth D"
+with fastdbf.Table("output.dbf", specs, dbf_type="db3") as table:
+    pass
 ```
 
 
@@ -145,7 +140,7 @@ table.open()
 
 Close the table.
 
-If the table was created with `on_disk=True`, `close()` writes the table to its default filename.
+`close()` writes the table to its default filename.
 
 Example:
 
@@ -258,22 +253,84 @@ print(table.structure())
 print(table.structure("NAME"))
 ```
 
-### `table.new(filename=":memory:", default_data_types=None, field_specs=None, on_disk=False, dbf_type=None)`
+### `table.to_columns()`
+
+Read all records into a dictionary of Python lists, with one key per column. Faster than row-based iteration.
+
+Example:
+
+```python
+import pandas as pd
+import fastdbf
+
+with fastdbf.Table("data.dbf").open("r") as table:
+    cols = table.to_columns()
+    df = pd.DataFrame(cols)
+```
+
+### `table.extend_columns(columns)`
+
+Append records given as a dictionary of Python lists.
+
+Example:
+
+```python
+import pandas as pd
+import fastdbf
+
+# Assuming df ist das Pandas DataFrame
+clean_data = {col: df[col].tolist() for col in df.columns if col != "_deleted"}
+
+with fastdbf.Table("output.dbf", "NAME C(20); AGE N(10,2)") as table:
+    table.extend_columns(clean_data)
+```
+
+### `table.to_arrow()`
+
+Export data as an Arrow `RecordBatch` using zero-copy memory sharing. Extends the Arrow PyCapsule interface.
+
+Example:
+
+```python
+import pandas as pd
+import pyarrow as pa
+import fastdbf
+
+with fastdbf.Table("data.dbf").open("r") as table:
+    arrow_batch = table.to_arrow()
+    df = pa.Table.from_batches([pa.record_batch(arrow_batch)]).to_pandas()
+```
+
+### `table.extend_arrow(batch)`
+
+Append records from an Apache Arrow `RecordBatch`.
+
+Example:
+
+```python
+import pyarrow as pa
+import fastdbf
+
+batch = pa.RecordBatch.from_pandas(df)
+with fastdbf.Table("output.dbf", "NAME C(20); AGE N(10,2)") as table:
+    table.extend_arrow(batch)
+```
+
+### `table.new(filename=":memory:", default_data_types=None, field_specs=None, dbf_type=None)`
 
 Create a new table using either the current table structure or an explicitly provided `field_specs` string.
 
 Examples:
 
 ```python
-copy = table.new("copy.dbf", on_disk=False)
-copy.open()
+with table.new("copy.dbf") as copy:
+    pass
 ```
 
 ```python
 custom = table.new(
     "custom.dbf",
     field_specs="name C(40); age N(3,0)",
-    on_disk=False,
     dbf_type="db3",
 )
 ```
@@ -379,23 +436,14 @@ Nullable fields are implemented using Visual FoxPro-compatible null flags.
 Example:
 
 ```python
-table = fastdbf.Table(
-    "nullable.dbf",
-    "name C(25) null; amount N(10,2) null; when T null; active L null",
-    on_disk=False,
-    dbf_type="vfp",
-)
-table.open()
-
-table.append({
-    "NAME": None,
-    "AMOUNT": None,
-    "WHEN": None,
-    "ACTIVE": None,
-})
-
-table.write("nullable.dbf")
-table.close()
+specs = "name C(25) null; amount N(10,2) null; when T null; active L null"
+with fastdbf.Table("nullable.dbf", specs, dbf_type="vfp") as table:
+    table.append({
+        "NAME": None,
+        "AMOUNT": None,
+        "WHEN": None,
+        "ACTIVE": None,
+    })
 ```
 
 Check whether a field is nullable:
@@ -411,39 +459,29 @@ for field in table.fields():
 import pandas as pd
 import fastdbf
 
-table = fastdbf.Table("input.dbf")
-table.open()
+with fastdbf.Table("input.dbf").open("r") as table:
+    df = pd.DataFrame(table.records())
+    df["NAME"] = df["NAME"].str.upper()
 
-df = pd.DataFrame(table.records())
-df["NAME"] = df["NAME"].str.upper()
+    field_specs = []
+    for field in table.fields():
+        code = field["type_code"]
+        nullable = " null" if field["nullable"] else ""
+        if code == "C":
+            field_specs.append(f'{field["name"]} C({field["length"]}){nullable}')
+        elif code in ("N", "F"):
+            field_specs.append(
+                f'{field["name"]} {code}({field["length"]},{field["decimals"]}){nullable}'
+            )
+        else:
+            field_specs.append(f'{field["name"]} {code}{nullable}')
 
-field_specs = []
-for field in table.fields():
-    code = field["type_code"]
-    nullable = " null" if field["nullable"] else ""
-    if code == "C":
-        field_specs.append(f'{field["name"]} C({field["length"]}){nullable}')
-    elif code in ("N", "F"):
-        field_specs.append(
-            f'{field["name"]} {code}({field["length"]},{field["decimals"]}){nullable}'
-        )
-    else:
-        field_specs.append(f'{field["name"]} {code}{nullable}')
+dbf_type = "vfp" if any(f["nullable"] for f in table.fields()) else "db3"
+specs = "; ".join(field_specs)
 
-out = fastdbf.Table(
-    "output.dbf",
-    "; ".join(field_specs),
-    on_disk=False,
-    dbf_type="vfp" if any(f["nullable"] for f in table.fields()) else "db3",
-)
-out.open()
-
-for row in df.to_dict(orient="records"):
-    out.append(row)
-
-out.write("output.dbf")
-out.close()
-table.close()
+with fastdbf.Table("output.dbf", specs, dbf_type=dbf_type) as out:
+    for row in df.to_dict(orient="records"):
+        out.append(row)
 ```
 
 ## Known Gaps Compared to the Original `dbf` Package
@@ -469,39 +507,23 @@ The module currently exports these compatibility-style constants:
 Read an existing file:
 
 ```python
-table = fastdbf.Table("input.dbf")
-table.open()
-rows = table.records()
-table.close()
+with fastdbf.Table("input.dbf").open("r") as table:
+    rows = table.records()
 ```
 
 Write a new DBF file:
 
 ```python
-table = fastdbf.Table(
-    "output.dbf",
-    "id N(10,0); name C(50); active L",
-    on_disk=False,
-    dbf_type="db3",
-)
-table.open()
-table.append((1, "Alice", True))
-table.append((2, "Bob", False))
-table.write("output.dbf")
-table.close()
+specs = "id N(10,0); name C(50); active L"
+with fastdbf.Table("output.dbf", specs, dbf_type="db3") as table:
+    table.append((1, "Alice", True))
+    table.append((2, "Bob", False))
 ```
 
 Write a nullable Visual FoxPro DBF:
 
 ```python
-table = fastdbf.Table(
-    "output_nullable.dbf",
-    "id I null; name C(50) null; created T null",
-    on_disk=False,
-    dbf_type="vfp",
-)
-table.open()
-table.append((None, None, None))
-table.write("output_nullable.dbf")
-table.close()
+specs = "id I null; name C(50) null; created T null"
+with fastdbf.Table("output_nullable.dbf", specs, dbf_type="vfp") as table:
+    table.append((None, None, None))
 ```
