@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0
+
+- Feature: Added `to_columns()` and `extend_columns()` methods to `PyTable` for high-performance bulk data transfer with Pandas (columnar I/O).
+
+## 0.1.9
+
+- Fix: Adjusted `_NullFlags` casing to match VFP specifications.
+
+## 0.1.8
+
+- Fix: Restored mandatory 263-byte VFP DBC backlink padding in header.
+
 ## 0.1.7
 
 - Feature: `field_specs` now accepts the dictionary output of `Table.fields()` directly, eliminating the need to manually format strings for table copying.

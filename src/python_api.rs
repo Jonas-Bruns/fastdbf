@@ -454,6 +454,94 @@ impl PyTable {
         PyList::new(py, items)
     }
 
+    fn to_columns<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        self.require_open()?;
+        let dict = PyDict::new(py);
+        let fields = self.inner.fields();
+        let records = self.inner.records();
+
+        for (i, field) in fields.iter().enumerate() {
+            let mut col_values = Vec::with_capacity(records.len());
+            for record in records {
+                col_values.push(value_to_py(py, &record.values()[i], self.encoding)?);
+            }
+            let list = PyList::new(py, col_values)?;
+            dict.set_item(field.name.as_str(), list)?;
+        }
+
+        let mut deleted_values = Vec::with_capacity(records.len());
+        for record in records {
+            deleted_values.push(Some(record.is_deleted()).into_pyobject(py)?.unbind());
+        }
+        let deleted_list = PyList::new(py, deleted_values)?;
+        dict.set_item("_deleted", deleted_list)?;
+
+        Ok(dict)
+    }
+
+    fn extend_columns<'py>(&mut self, columns: &Bound<'py, PyDict>) -> PyResult<()> {
+        self.require_read_write()?;
+        let fields = self.inner.fields().to_vec();
+        let mut col_data: Vec<Vec<PyObject>> = Vec::with_capacity(fields.len());
+
+        for field in &fields {
+            if let Some(item) = columns.get_item(field.name.as_str())? {
+                let list = item.downcast::<PyList>()?;
+                let data = list.extract::<Vec<PyObject>>()?;
+                col_data.push(data);
+            } else {
+                return Err(PyKeyError::new_err(format!("Missing column: {}", field.name)));
+            }
+        }
+
+        let deleted_data = if let Some(item) = columns.get_item("_deleted")? {
+            let list = item.downcast::<PyList>()?;
+            Some(list.extract::<Vec<bool>>()?)
+        } else {
+            None
+        };
+
+        let len = if !col_data.is_empty() {
+            col_data[0].len()
+        } else {
+            0
+        };
+
+        for data in &col_data {
+            if data.len() != len {
+                return Err(PyValueError::new_err("All columns must have the same length"));
+            }
+        }
+
+        let mut records = Vec::with_capacity(len);
+
+        Python::with_gil(|py| -> PyResult<()> {
+            for row_idx in 0..len {
+                let mut values = Vec::with_capacity(fields.len());
+                for (col_idx, data) in col_data.iter().enumerate() {
+                    let py_val = data[row_idx].bind(py);
+                    let val = py_to_value_with_encoding(py_val, &fields[col_idx], self.encoding)?;
+                    values.push(val);
+                }
+
+                let deleted = if let Some(ref data) = deleted_data {
+                    data[row_idx]
+                } else {
+                    false
+                };
+
+                records.push(Record::from_values(deleted, values));
+            }
+            Ok(())
+        })?;
+
+        for record in records {
+            self.inner.push_record(record).map_err(to_py_error)?;
+        }
+
+        Ok(())
+    }
+
     fn fields<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         self.require_open()?;
         let items = self
