@@ -4,7 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "fastdbf"
-version = "0.4.3"
+version = "0.4.4"
+
 
 description = "A Python package for reading and writing DBF files, powered by a Rust core"
 authors = [{ name = "Jonas Bruns" }]
@@ -25,11 +26,12 @@ classifiers = [
   "Topic :: Database",
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
+dependencies = []
+
 [project.urls]
 Repository = "https://github.com/Jonas-Bruns/fastdbf"
 Homepage = "https://github.com/Jonas-Bruns/fastdbf"
 
-dependencies = []
 
 
 

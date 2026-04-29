@@ -1,6 +1,11 @@
 # Changelog
 
+## 0.4.4
+
+- Fix: Resolved TOML syntax error in `pyproject.toml` regarding dependencies location.
+
 ## 0.4.3
+
 
 - Feature: Introduced custom exception classes (`FastDbfError`, `DbfFormatError`, `UnsupportedDbfTypeError`).
 - Feature: Timestamps are now automatically written to DBF headers during modification.
