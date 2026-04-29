@@ -28,12 +28,13 @@ GLOBAL_SPECS = ""
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def make_rows(n: int, num_cols: int = 50) -> list[dict]:
     """Generates a specification string and n rows with num_cols fields."""
     global GLOBAL_SPECS
     specs_list = []
     fields_info = []
-    
+
     for i in range(1, num_cols + 1):
         col_type = i % 4
         if col_type == 0:
@@ -48,9 +49,9 @@ def make_rows(n: int, num_cols: int = 50) -> list[dict]:
         else:
             specs_list.append(f"COL{i} D")
             fields_info.append((f"COL{i}", "D"))
-            
+
     GLOBAL_SPECS = "; ".join(specs_list)
-    
+
     rows = []
     for _ in range(n):
         row = {}
@@ -67,7 +68,7 @@ def make_rows(n: int, num_cols: int = 50) -> list[dict]:
                 day = random.randint(1, 28)
                 row[name] = f"{year:04d}-{month:02d}-{day:02d}"
         rows.append(row)
-        
+
     return rows
 
 
@@ -112,6 +113,7 @@ def estimate_csv_size(rows: list[dict]) -> int:
 # fastdbf (Row-by-Row)
 # ---------------------------------------------------------------------------
 
+
 def bench_fastdbf_row_write(rows: list[dict], path: str) -> float:
     import fastdbf
 
@@ -136,6 +138,7 @@ def bench_fastdbf_row_read(path: str) -> tuple[float, int]:
 # fastdbf (Columnar Interface)
 # ---------------------------------------------------------------------------
 
+
 def bench_fastdbf_columnar_write(rows: list[dict], path: str) -> float:
     import fastdbf
 
@@ -147,8 +150,9 @@ def bench_fastdbf_columnar_write(rows: list[dict], path: str) -> float:
 
 
 def bench_fastdbf_columnar_read(path: str) -> tuple[float, int]:
-    import fastdbf
     import pandas as pd
+
+    import fastdbf
 
     start = time.perf_counter()
     with fastdbf.Table(path).open("r") as t:
@@ -162,10 +166,12 @@ def bench_fastdbf_columnar_read(path: str) -> tuple[float, int]:
 # fastdbf (Arrow Interface)
 # ---------------------------------------------------------------------------
 
+
 def bench_fastdbf_arrow_write(rows: list[dict], path: str) -> float:
-    import fastdbf
     import pandas as pd
     import pyarrow as pa
+
+    import fastdbf
 
     df = pd.DataFrame(rows)
     batch = pa.RecordBatch.from_pandas(df)
@@ -177,9 +183,9 @@ def bench_fastdbf_arrow_write(rows: list[dict], path: str) -> float:
 
 
 def bench_fastdbf_arrow_read(path: str) -> tuple[float, int]:
-    import fastdbf
-    import pandas as pd
     import pyarrow as pa
+
+    import fastdbf
 
     start = time.perf_counter()
     with fastdbf.Table(path).open("r") as t:
@@ -192,19 +198,18 @@ def bench_fastdbf_arrow_read(path: str) -> tuple[float, int]:
 # dbf (pure-Python reference implementation)
 # ---------------------------------------------------------------------------
 
+
 def bench_dbf_write(rows: list[dict], path: str) -> float:
     import dbf
 
     dbf_specs = GLOBAL_SPECS.lower()
     table = dbf.Table(path, dbf_specs, dbf_type="db3")
     table.open(dbf.READ_WRITE)
-    
+
     date_fields = [
-        part.split()[0].lower()
-        for part in GLOBAL_SPECS.split("; ")
-        if part.split()[1] == "D"
+        part.split()[0].lower() for part in GLOBAL_SPECS.split("; ") if part.split()[1] == "D"
     ]
-    
+
     start = time.perf_counter()
     for row in rows:
         cleaned = {}
@@ -280,11 +285,11 @@ def run_benchmark(rows: list[dict], warmup: bool = True) -> list[Result]:
 
 def plot_results(results: list[Result]):
     labels = [r.label for r in results]
-    
+
     # 1. Speedup Plot
     dbf_write_time = next(r.write_s for r in results if r.label == "dbf")
     dbf_read_time = next(r.read_s for r in results if r.label == "dbf")
-    
+
     write_speedups = [dbf_write_time / r.write_s for r in results]
     read_speedups = [dbf_read_time / r.read_s for r in results]
 
@@ -294,8 +299,12 @@ def plot_results(results: list[Result]):
     x = range(len(labels))
     width = 0.35
 
-    ax.bar([i - width / 2 for i in x], write_speedups, width, label="Write Speedup (x)", color="salmon")
-    ax.bar([i + width / 2 for i in x], read_speedups, width, label="Read Speedup (x)", color="skyblue")
+    ax.bar(
+        [i - width / 2 for i in x], write_speedups, width, label="Write Speedup (x)", color="salmon"
+    )
+    ax.bar(
+        [i + width / 2 for i in x], read_speedups, width, label="Read Speedup (x)", color="skyblue"
+    )
 
     ax.set_ylabel("Speedup Factor (vs pure-Python dbf)")
     ax.set_title(f"Performance Speedup ({results[0].row_count:,} rows)")
@@ -311,7 +320,7 @@ def plot_results(results: list[Result]):
 
     # 2. Time Plot
     fig, ax = plt.subplots(figsize=(10, 6))
-    
+
     write_times = [r.write_s for r in results]
     read_times = [r.read_s for r in results]
 
@@ -328,8 +337,6 @@ def plot_results(results: list[Result]):
     plt.savefig(os.path.join(script_dir, "benchmark_time.png"), dpi=300)
     plt.close()
     print(f"Time plot saved to {os.path.join(script_dir, 'benchmark_time.png')}")
-
-
 
 
 def print_results(results: list[Result], rows: list[dict]) -> None:

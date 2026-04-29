@@ -14,7 +14,6 @@ pyo3::create_exception!(fastdbf, FastDbfError, pyo3::exceptions::PyException);
 pyo3::create_exception!(fastdbf, DbfFormatError, FastDbfError);
 pyo3::create_exception!(fastdbf, UnsupportedDbfTypeError, FastDbfError);
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // TableStatus / TableLocation enums (unchanged)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1151,11 +1150,14 @@ fn fastdbf(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyRecord>()?;
     module.add_class::<TableStatus>()?;
     module.add_class::<TableLocation>()?;
-    
+
     // Custom exceptions
     module.add("FastDbfError", module.py().get_type::<FastDbfError>())?;
     module.add("DbfFormatError", module.py().get_type::<DbfFormatError>())?;
-    module.add("UnsupportedDbfTypeError", module.py().get_type::<UnsupportedDbfTypeError>())?;
+    module.add(
+        "UnsupportedDbfTypeError",
+        module.py().get_type::<UnsupportedDbfTypeError>(),
+    )?;
 
     // Legacy string constants.
     module.add("CLOSED", CLOSED)?;
@@ -1317,7 +1319,6 @@ fn to_py_error(error: crate::Error) -> PyErr {
         crate::Error::Unsupported(message) => UnsupportedDbfTypeError::new_err(message),
     }
 }
-
 
 fn dbf_type_to_kind(dbf_type: Option<&str>) -> PyResult<Option<crate::header::DbfKind>> {
     match dbf_type.map(|value| value.trim().to_ascii_lowercase()) {

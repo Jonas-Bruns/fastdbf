@@ -8,10 +8,9 @@ use crate::memo::MemoFile;
 use crate::record::Record;
 use crate::spec::FieldSpec;
 use crate::value::{Date, DateTime, Value};
+use chrono::Datelike;
 use rayon::prelude::*;
 use std::sync::Mutex;
-use chrono::Datelike;
-
 
 pub const CLOSED: &str = "closed";
 pub const READ_ONLY: &str = "read_only";

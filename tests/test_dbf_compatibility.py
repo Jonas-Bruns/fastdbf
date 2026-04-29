@@ -1,7 +1,9 @@
-import os
 from pathlib import Path
+
 import dbf
+
 import fastdbf
+
 
 def test_roundtrip_with_dbf_package(tmp_path: Path) -> None:
     in_path = tmp_path / "roundtrip_in.dbf"
@@ -33,7 +35,7 @@ def test_roundtrip_with_dbf_package(tmp_path: Path) -> None:
                 field_specs.append(f"{name} {code}({length},{decimals}){nullable}")
             else:
                 field_specs.append(f"{name} {code}{nullable}{binary}")
-        
+
         records = [r.as_dict() for r in inp.record_objects()]
 
     # 3. Write new file with fastdbf
@@ -62,7 +64,7 @@ def test_header_comparison_with_dbf_package(tmp_path: Path) -> None:
     t_dbf.close()
 
     # Create with fastdbf
-    with fastdbf.Table(str(fast_path), specs, dbf_type="vfp") as t_fast:
+    with fastdbf.Table(str(fast_path), specs, dbf_type="vfp"):
         pass
 
     # Analyze headers
