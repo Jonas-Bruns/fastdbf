@@ -1,6 +1,14 @@
 # Changelog
 
+## 0.4.3
+
+- Feature: Introduced custom exception classes (`FastDbfError`, `DbfFormatError`, `UnsupportedDbfTypeError`).
+- Feature: Timestamps are now automatically written to DBF headers during modification.
+- Testing: Added full integration test coverage for previously untested methods (`tests/test_full_api.py`).
+- CI/CD: Enforced releases only from the `main` branch and upgraded actions to Node 24.
+
 ## 0.4.2
+
 
 - CI/CD: Final verification of PyPI deployment.
 
