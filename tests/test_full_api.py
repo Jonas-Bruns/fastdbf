@@ -84,7 +84,7 @@ def test_table_columnar_api(tmp_path: Path) -> None:
 
 
 def test_table_arrow_api(tmp_path: Path) -> None:
-    import pyarrow as pa
+    pa = pytest.importorskip("pyarrow")
 
     path = tmp_path / "test.dbf"
     table = fastdbf.Table(str(path), "name C(10); age N(3,0)", dbf_type="db3")
