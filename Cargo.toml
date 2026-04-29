@@ -19,6 +19,8 @@ rayon = "1.10"
 memmap2 = "0.9"
 arrow = "54.0.0"
 pyo3-arrow = "0.7.0"
+chrono = "0.4"
+
 
 [features]
 extension-module = ["pyo3/extension-module"]

@@ -1,8 +1,7 @@
 # Python API
 
-This document describes the current Python API exposed by `fastdbf`.
+This document describes the Python API exposed by `fastdbf`, a high-performance Rust-based tool optimized for large datasets.
 
-The package is inspired by the original [`ethanfurman/dbf`](https://github.com/ethanfurman/dbf) project, but it does not yet provide full API compatibility. Everything listed here is available in the current implementation.
 
 ## Import
 

@@ -10,6 +10,8 @@ use crate::spec::FieldSpec;
 use crate::value::{Date, DateTime, Value};
 use rayon::prelude::*;
 use std::sync::Mutex;
+use chrono::Datelike;
+
 
 pub const CLOSED: &str = "closed";
 pub const READ_ONLY: &str = "read_only";
@@ -290,8 +292,14 @@ impl Table {
 
     pub fn write_to_path(&mut self, path: impl AsRef<Path>) -> Result<()> {
         self.header.record_count = self.records.len() as u32;
-        self.header.last_update = None;
+        let now = chrono::Local::now();
+        self.header.last_update = Some(Date::new(
+            now.year() as u16,
+            now.month() as u8,
+            now.day() as u8,
+        ));
         let backlink = self.header.kind.backlink_size();
+
         self.header.header_length = 32
             + (self.fields.len() as u16 + u16::from(self.null_flags.is_some())) * 32
             + 1   // 0x0D terminator

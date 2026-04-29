@@ -133,10 +133,11 @@ wheels = [
 
 [[package]]
 name = "fastdbf"
-version = "0.3.1"
+version = "0.4.2"
 source = { editable = "." }
-dependencies = [
-    { name = "pandas" },
+
+[package.optional-dependencies]
+arrow = [
     { name = "pyarrow" },
 ]
 
@@ -152,10 +153,8 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "pandas", specifier = ">=3.0.2" },
-    { name = "pyarrow", specifier = ">=24.0.0" },
-]
+requires-dist = [{ name = "pyarrow", marker = "extra == 'arrow'", specifier = ">=14.0.0" }]
+provides-extras = ["arrow"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -22,41 +22,53 @@ from dataclasses import dataclass
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+GLOBAL_SPECS = ""
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-
-def random_name(length: int = 10) -> str:
-    return "".join(random.choices(string.ascii_letters, k=length))
-
-
-def random_date_str() -> str:
-    year = random.randint(1950, 2024)
-    month = random.randint(1, 12)
-    day = random.randint(1, 28)
-    return f"{year:04d}{month:02d}{day:02d}"
-
-
-def random_date_iso() -> str:
-    year = random.randint(1950, 2024)
-    month = random.randint(1, 12)
-    day = random.randint(1, 28)
-    return f"{year:04d}-{month:02d}-{day:02d}"
-
-
-def make_rows(n: int) -> list[dict]:
-    """Generates n rows with mixed data types."""
-    return [
-        {
-            "NAME": random_name(10),
-            "AGE": random.randint(18, 90),
-            "SCORE": round(random.uniform(0.0, 100.0), 2),
-            "ACTIVE": random.choice([True, False]),
-            "BIRTH": random_date_iso(),
-        }
-        for _ in range(n)
-    ]
+def make_rows(n: int, num_cols: int = 50) -> list[dict]:
+    """Generates a specification string and n rows with num_cols fields."""
+    global GLOBAL_SPECS
+    specs_list = []
+    fields_info = []
+    
+    for i in range(1, num_cols + 1):
+        col_type = i % 4
+        if col_type == 0:
+            specs_list.append(f"COL{i} C(10)")
+            fields_info.append((f"COL{i}", "C"))
+        elif col_type == 1:
+            specs_list.append(f"COL{i} N(10,2)")
+            fields_info.append((f"COL{i}", "N"))
+        elif col_type == 2:
+            specs_list.append(f"COL{i} L")
+            fields_info.append((f"COL{i}", "L"))
+        else:
+            specs_list.append(f"COL{i} D")
+            fields_info.append((f"COL{i}", "D"))
+            
+    GLOBAL_SPECS = "; ".join(specs_list)
+    
+    rows = []
+    for _ in range(n):
+        row = {}
+        for name, t in fields_info:
+            if t == "C":
+                row[name] = "".join(random.choices(string.ascii_letters, k=10))
+            elif t == "N":
+                row[name] = round(random.uniform(0.0, 1000.0), 2)
+            elif t == "L":
+                row[name] = random.choice([True, False])
+            else:
+                year = random.randint(1950, 2024)
+                month = random.randint(1, 12)
+                day = random.randint(1, 28)
+                row[name] = f"{year:04d}-{month:02d}-{day:02d}"
+        rows.append(row)
+        
+    return rows
 
 
 @dataclass
@@ -97,62 +109,112 @@ def estimate_csv_size(rows: list[dict]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# fastdbf
+# fastdbf (Row-by-Row)
 # ---------------------------------------------------------------------------
 
-
-def bench_fastdbf_write(rows: list[dict], path: str) -> float:
+def bench_fastdbf_row_write(rows: list[dict], path: str) -> float:
     import fastdbf
 
-    t = fastdbf.create_table(
-        "NAME C(10); AGE N(3,0); SCORE N(7,2); ACTIVE L; BIRTH D",
-        filename=path,
-        on_disk=True,
-    )
-    t.open()
     start = time.perf_counter()
-    for row in rows:
-        t.append(row)
-    t.close()
+    with fastdbf.Table(path, GLOBAL_SPECS, dbf_type="db3") as t:
+        for row in rows:
+            t.append(row)
     return time.perf_counter() - start
 
 
-def bench_fastdbf_read(path: str) -> tuple[float, int]:
+def bench_fastdbf_row_read(path: str) -> tuple[float, int]:
     import fastdbf
 
     start = time.perf_counter()
-    t = fastdbf.open_table(path)
-    records = list(t)
+    with fastdbf.Table(path).open("r") as t:
+        records = list(t)
     elapsed = time.perf_counter() - start
     return elapsed, len(records)
+
+
+# ---------------------------------------------------------------------------
+# fastdbf (Columnar Interface)
+# ---------------------------------------------------------------------------
+
+def bench_fastdbf_columnar_write(rows: list[dict], path: str) -> float:
+    import fastdbf
+
+    cols = {col: [r[col] for r in rows] for col in rows[0].keys()}
+    start = time.perf_counter()
+    with fastdbf.Table(path, GLOBAL_SPECS, dbf_type="db3") as t:
+        t.extend_columns(cols)
+    return time.perf_counter() - start
+
+
+def bench_fastdbf_columnar_read(path: str) -> tuple[float, int]:
+    import fastdbf
+    import pandas as pd
+
+    start = time.perf_counter()
+    with fastdbf.Table(path).open("r") as t:
+        cols = t.to_columns()
+        df = pd.DataFrame(cols)
+    elapsed = time.perf_counter() - start
+    return elapsed, len(df)
+
+
+# ---------------------------------------------------------------------------
+# fastdbf (Arrow Interface)
+# ---------------------------------------------------------------------------
+
+def bench_fastdbf_arrow_write(rows: list[dict], path: str) -> float:
+    import fastdbf
+    import pandas as pd
+    import pyarrow as pa
+
+    df = pd.DataFrame(rows)
+    batch = pa.RecordBatch.from_pandas(df)
+
+    start = time.perf_counter()
+    with fastdbf.Table(path, GLOBAL_SPECS, dbf_type="db3") as t:
+        t.extend_arrow(batch)
+    return time.perf_counter() - start
+
+
+def bench_fastdbf_arrow_read(path: str) -> tuple[float, int]:
+    import fastdbf
+    import pandas as pd
+    import pyarrow as pa
+
+    start = time.perf_counter()
+    with fastdbf.Table(path).open("r") as t:
+        df = pa.Table.from_batches([pa.record_batch(t.to_arrow())]).to_pandas()
+    elapsed = time.perf_counter() - start
+    return elapsed, len(df)
 
 
 # ---------------------------------------------------------------------------
 # dbf (pure-Python reference implementation)
 # ---------------------------------------------------------------------------
 
-
 def bench_dbf_write(rows: list[dict], path: str) -> float:
     import dbf
 
-    table = dbf.Table(
-        path,
-        "name C(10); age N(3,0); score N(7,2); active L; birth D",
-        dbf_type="db3",
-    )
+    dbf_specs = GLOBAL_SPECS.lower()
+    table = dbf.Table(path, dbf_specs, dbf_type="db3")
     table.open(dbf.READ_WRITE)
+    
+    date_fields = [
+        part.split()[0].lower()
+        for part in GLOBAL_SPECS.split("; ")
+        if part.split()[1] == "D"
+    ]
+    
     start = time.perf_counter()
     for row in rows:
-        ymd = row["BIRTH"].replace("-", "")
-        table.append(
-            {
-                "name": row["NAME"],
-                "age": row["AGE"],
-                "score": row["SCORE"],
-                "active": row["ACTIVE"],
-                "birth": dbf.Date.fromymd(ymd),
-            }
-        )
+        cleaned = {}
+        for k, v in row.items():
+            k_lower = k.lower()
+            if k_lower in date_fields:
+                cleaned[k_lower] = dbf.Date.fromymd(v.replace("-", ""))
+            else:
+                cleaned[k_lower] = v
+        table.append(cleaned)
     table.close()
     return time.perf_counter() - start
 
@@ -179,8 +241,10 @@ def run_benchmark(rows: list[dict], warmup: bool = True) -> list[Result]:
     results = []
 
     benches = [
-        ("fastdbf", bench_fastdbf_write, bench_fastdbf_read),
         ("dbf", bench_dbf_write, bench_dbf_read),
+        ("fastdbf (row)", bench_fastdbf_row_write, bench_fastdbf_row_read),
+        ("fastdbf (columnar)", bench_fastdbf_columnar_write, bench_fastdbf_columnar_read),
+        ("fastdbf (arrow)", bench_fastdbf_arrow_write, bench_fastdbf_arrow_read),
     ]
 
     for label, write_fn, read_fn in benches:
@@ -214,30 +278,58 @@ def run_benchmark(rows: list[dict], warmup: bool = True) -> list[Result]:
 # ---------------------------------------------------------------------------
 
 
-def plot_results(results: list[Result], filename="benchmark.png"):
+def plot_results(results: list[Result]):
     labels = [r.label for r in results]
-    read_times = [r.read_s for r in results]
-    write_times = [r.write_s for r in results]
+    
+    # 1. Speedup Plot
+    dbf_write_time = next(r.write_s for r in results if r.label == "dbf")
+    dbf_read_time = next(r.read_s for r in results if r.label == "dbf")
+    
+    write_speedups = [dbf_write_time / r.write_s for r in results]
+    read_speedups = [dbf_read_time / r.read_s for r in results]
 
     sns.set_theme(style="whitegrid")
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-
+    fig, ax = plt.subplots(figsize=(10, 6))
     x = range(len(labels))
     width = 0.35
 
-    ax.bar([i - width / 2 for i in x], write_times, width, label="Write Time (s)", color="salmon")
-    ax.bar([i + width / 2 for i in x], read_times, width, label="Read Time (s)", color="skyblue")
+    ax.bar([i - width / 2 for i in x], write_speedups, width, label="Write Speedup (x)", color="salmon")
+    ax.bar([i + width / 2 for i in x], read_speedups, width, label="Read Speedup (x)", color="skyblue")
 
-    ax.set_ylabel("Time (Seconds)")
-    ax.set_title(f"Performance Comparison ({results[0].row_count:,} rows)")
+    ax.set_ylabel("Speedup Factor (vs pure-Python dbf)")
+    ax.set_title(f"Performance Speedup ({results[0].row_count:,} rows)")
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     ax.legend()
 
     plt.tight_layout()
-    plt.savefig(filename, dpi=300)
-    print(f"Plot saved to {filename}")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    plt.savefig(os.path.join(script_dir, "benchmark_speedup.png"), dpi=300)
+    plt.close()
+    print(f"Speedup plot saved to {os.path.join(script_dir, 'benchmark_speedup.png')}")
+
+    # 2. Time Plot
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    write_times = [r.write_s for r in results]
+    read_times = [r.read_s for r in results]
+
+    ax.bar([i - width / 2 for i in x], write_times, width, label="Write Time (s)", color="salmon")
+    ax.bar([i + width / 2 for i in x], read_times, width, label="Read Time (s)", color="skyblue")
+
+    ax.set_ylabel("Time in Seconds (lower is better)")
+    ax.set_title(f"Execution Time ({results[0].row_count:,} rows)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.legend()
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(script_dir, "benchmark_time.png"), dpi=300)
+    plt.close()
+    print(f"Time plot saved to {os.path.join(script_dir, 'benchmark_time.png')}")
+
+
 
 
 def print_results(results: list[Result], rows: list[dict]) -> None:

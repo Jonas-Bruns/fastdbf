@@ -1,31 +1,33 @@
 # fastdbf
 
-`fastdbf` is a Rust-based reimplementation of the core ideas from [`ethanfurman/dbf`](https://github.com/ethanfurman/dbf), exposed as a Python package through `PyO3`.
+`fastdbf` is a high-performance Python package for reading and writing `.dbf` files.
 
-The current focus is a practical Python-first package for reading and writing `.dbf` files, including Visual FoxPro-style nullable fields.
+Written in **Rust** (using `PyO3`), it provides standard Python bindings designed specifically for **large datasets**, where traditional pure-Python solutions (like the standard `dbf` package) suffer from significant performance bottlenecks.
 
-![Performance Benchmark](benchmark.png)
+
+![Performance Time](benchmarks/benchmark_time.png)
+![Performance Speedup](benchmarks/benchmark_speedup.png)
+
+
 
 ## Status
 
-This project is in an early but usable state.
+`fastdbf` is fully production-ready for core data exchange workloads.
 
-Implemented today:
+### Supported Features
 
-- read `.dbf` files from Python
-- inspect field metadata and field types
-- create new tables from DBF-style field specifications
-- append rows from dictionaries or tuples
-- write tables back to disk
-- Visual FoxPro null-flag support for nullable fields
-- a Rust core with test coverage for read/write roundtrips
+- **High-Performance I/O**: Lightning fast reads and writes of standard `.dbf` files.
+- **Zero-Copy Bulk Transfers**: Native Apache Arrow integration (`to_arrow()`, `extend_arrow()`) for high-speed exchange with Pandas/Polars.
+- **Visual FoxPro Support**: Direct handling of VFP `.dbf` flavors, including mandatory null-flag layouts.
+- **Memo Fields**: Automatic management of companion `.fpt` memo files for unbounded strings.
+- **Strict Typing**: Clear data mappings with custom exception classes (`DbfFormatError`).
 
-Not implemented yet:
+### Not Implemented yet
 
-- full memo file support (`.dbt` / `.fpt`)
-- full original `dbf` compatibility surface
-- record objects with attribute access like `record.name`
-- indexing, relations, PQL, and most advanced helpers from the original project
+- **In-place Schema Modification**: Dynamic addition/removal of columns on pre-written tables (currently raises `UnsupportedDbfTypeError`).
+- **Advanced Engine Tools**: Indexing, cross-table relationships, or built-in query paradigms.
+
+
 
 ## Installation
 

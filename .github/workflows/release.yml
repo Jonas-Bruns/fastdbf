@@ -10,8 +10,35 @@ permissions:
   contents: read
 
 jobs:
+  verify-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify branch for workflow_dispatch
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        run: |
+          echo "Error: workflow_dispatch can only be run on main branch."
+          exit 1
+          
+      - name: Checkout code
+        if: github.event_name == 'push'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      - name: Verify tag is on main
+        if: github.event_name == 'push'
+        run: |
+          if git branch -r --contains ${{ github.ref }} | grep -q "origin/main"; then
+            echo "Tag is on main branch."
+          else
+            echo "Error: Tag is not on the main branch."
+            exit 1
+          fi
+
   linux:
     runs-on: ubuntu-latest
+    needs: verify-tag
+
     strategy:
       matrix:
         target: [x86_64, aarch64]
@@ -37,6 +64,8 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    needs: verify-tag
+
     strategy:
       matrix:
         target: [x64]
@@ -62,6 +91,8 @@ jobs:
 
   macos:
     runs-on: macos-latest
+    needs: verify-tag
+
     strategy:
       matrix:
         target: [x86_64, aarch64]
@@ -86,6 +117,8 @@ jobs:
 
   sdist:
     runs-on: ubuntu-latest
+    needs: verify-tag
+
     steps:
       - uses: actions/checkout@v4
       - name: Build sdist

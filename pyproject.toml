@@ -24,9 +24,12 @@ classifiers = [
   "Topic :: Database",
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dependencies = [
-    "pandas>=3.0.2",
-    "pyarrow>=24.0.0",
+dependencies = []
+
+
+[project.optional-dependencies]
+arrow = [
+    "pyarrow>=14.0.0",
 ]
 
 [dependency-groups]
