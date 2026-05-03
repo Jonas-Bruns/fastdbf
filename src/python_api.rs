@@ -1305,7 +1305,7 @@ fn value_to_py(
                 date.day as u32,
             )
             .ok_or_else(|| PyValueError::new_err("invalid date"))?;
-            Ok(chrono_date.into_pyobject(py)?.unbind().into())
+            Ok(chrono_date.into_pyobject(py)?.unbind())
         }
         Value::Date(None) => Ok(py.None()),
         Value::Integer(number) => Ok(number.into_pyobject(py)?.unbind().into()),
@@ -1313,14 +1313,14 @@ fn value_to_py(
         Value::DateTime(Some(value)) => {
             if let Some((year, month, day)) = julian_day_to_ymd(value.julian_day) {
                 let total_millis = value.millis_since_midnight.max(0) as u32;
-                let hour = (total_millis / 3_600_000) as u32;
-                let minute = ((total_millis % 3_600_000) / 60_000) as u32;
-                let second = ((total_millis % 60_000) / 1_000) as u32;
-                let millis = (total_millis % 1_000) as u32;
-                let chrono_dt = chrono::NaiveDate::from_ymd_opt(year, month as u32, day as u32)
+                let hour = total_millis / 3_600_000;
+                let minute = (total_millis % 3_600_000) / 60_000;
+                let second = (total_millis % 60_000) / 1_000;
+                let millis = total_millis % 1_000;
+                let chrono_dt = chrono::NaiveDate::from_ymd_opt(year, month, day)
                     .and_then(|d| d.and_hms_milli_opt(hour, minute, second, millis))
                     .ok_or_else(|| PyValueError::new_err("invalid datetime"))?;
-                Ok(chrono_dt.into_pyobject(py)?.unbind().into())
+                Ok(chrono_dt.into_pyobject(py)?.unbind())
             } else {
                 Ok(datetime_to_iso(*value).into_pyobject(py)?.unbind().into())
             }
@@ -1516,10 +1516,6 @@ fn field_spec_string(info: &FieldDescriptor) -> String {
             }
         }
     }
-}
-
-fn date_to_iso(date: Date) -> String {
-    format!("{:04}-{:02}-{:02}", date.year, date.month, date.day)
 }
 
 fn datetime_to_iso(datetime: DateTime) -> String {
