@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1
+
+- **Fix**: Support for `NaN` (float) and Pandas `NA` values in Character and Memo fields. These values are now correctly treated as `Null` instead of raising a `PyTypeError`.
+- **Testing**: Added `tests/test_nan_handling.py` to ensure robust handling of various null-like values across field types.
+
 ## 0.5.0
 
 - **Feature**: Native type mapping for Pandas/Arrow integration.

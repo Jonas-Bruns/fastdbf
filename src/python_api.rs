@@ -1366,6 +1366,15 @@ fn py_to_value_with_encoding(
     if value.is_none() {
         return Ok(Value::Null);
     }
+
+    // Handle NaN (float('nan')) as Null.
+    // This is common in Pandas DataFrames even for string/object columns.
+    if let Ok(f) = value.extract::<f64>() {
+        if f.is_nan() {
+            return Ok(Value::Null);
+        }
+    }
+
     match field.field_type {
         crate::header::FieldType::Character => {
             // Accept both str and bytes.
