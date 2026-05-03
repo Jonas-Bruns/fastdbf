@@ -20,6 +20,7 @@ Written in **Rust** (using `PyO3`), it provides standard Python bindings designe
 - **Zero-Copy Bulk Transfers**: Native Apache Arrow integration (`to_arrow()`, `extend_arrow()`) for high-speed exchange with Pandas/Polars.
 - **Visual FoxPro Support**: Direct handling of VFP `.dbf` flavors, including mandatory null-flag layouts.
 - **Memo Fields**: Automatic management of companion `.fpt` memo files for unbounded strings.
+- **Native Type Mapping**: Correct Python/Arrow types for dates, datetimes, and integers — no manual casting needed.
 - **Strict Typing**: Clear data mappings with custom exception classes (`DbfFormatError`).
 
 ### Not Implemented yet
@@ -85,23 +86,59 @@ Create and write a new DBF file:
 
 ```python
 import fastdbf
+from datetime import date, datetime
 
-specs = "name C(25) null; age N(3,0) null; birth D null; active L null"
+specs = "name C(25) null; age N(3,0) null; birth D null; created T null; active L null"
 with fastdbf.Table("people.dbf", specs, dbf_type="vfp") as table:
     table.append({
-        "NAME": "Spunky",
-        "AGE": 23,
-        "BIRTH": "1989-07-23",
-        "ACTIVE": True,
+        "name": "Alice",       # case-insensitive keys
+        "age": 30,
+        "birth": date(1994, 5, 20),
+        "created": datetime(2024, 1, 1, 12, 0),
+        "active": True,
     })
 
     table.append({
         "NAME": None,
         "AGE": None,
         "BIRTH": None,
+        "CREATED": None,
         "ACTIVE": None,
     })
 ```
+
+
+
+## Type Mapping
+
+fastdbf maps DBF field types to native Python and Arrow types, so no manual casting is needed in either direction.
+
+### DBF → Python / Arrow
+
+| DBF Field | DBF Type Code | Python type | Arrow type |
+|:---|:---:|:---|:---|
+| Character | `C` | `str` | `Utf8` |
+| Numeric (integer) | `N(n,0)` | `int` | `Int64` |
+| Numeric (decimal) | `N(n,k)` | `float` | `Float64` |
+| Date | `D` | `datetime.date` | `Date32` |
+| DateTime | `T` | `datetime.datetime` | `Timestamp(ms)` |
+| Logical | `L` | `bool` | `Boolean` |
+| Integer | `I` | `int` | `Int32` |
+| Double | `B` | `float` | `Float64` |
+
+### Python / Pandas → DBF (writing)
+
+`append()` and `extend_arrow()` both accept the types listed above, **plus** Pandas-native types without any manual casting:
+
+| Input type | DBF field written |
+|:---|:---|
+| `datetime.date` | `D` (Date) |
+| `datetime.datetime` | `T` (DateTime) |
+| `pandas.Timestamp` | `T` (DateTime) |
+| `numpy.int64` / `int` | `N(n,0)` or `I` |
+| `numpy.float64` / `float` | `N(n,k)` or `B` |
+
+> **Note**: `append(dict)` is **case-insensitive** — `"name"`, `"NAME"`, and `"Name"` all resolve to the same DBF field.
 
 
 
@@ -128,35 +165,64 @@ Nullable fields are supported through `null` or `nullable` modifiers in the fiel
 
 Nullable fields should be used with `dbf_type="vfp"` for Visual FoxPro-compatible null flags.
 
-## pandas Example
+## Pandas / Arrow Integration
+
+### Reading a DBF into Pandas (recommended)
+
+Using the Arrow interface gives correct types directly — no extra dtype conversion needed:
 
 ```python
-import pandas as pd
+import fastdbf
+import pyarrow as pa
+
+with fastdbf.Table("data.dbf").open("r") as table:
+    df = pa.record_batch(table.to_arrow()).to_pandas()
+
+# Result:
+# - Date fields    → datetime64 (via object column of datetime.date)
+# - DateTime fields → datetime64[ms]
+# - Numeric(N,0)   → Int64 (no silent float coercion!)
+# - Logical        → bool
+```
+
+### Writing a Pandas DataFrame to DBF
+
+**Method A: Arrow (fastest, recommended for large DataFrames)**
+
+```python
+import fastdbf
+import pyarrow as pa
+
+batch = pa.RecordBatch.from_pandas(df)
+
+with fastdbf.Table("output.dbf", field_specs="NAME C(20); AGE N(10,0); BIRTH D; CREATED T") as table:
+    table.extend_arrow(batch)
+```
+
+**Method B: Row-by-row `append` (no dependencies beyond fastdbf)**
+
+```python
 import fastdbf
 
-with fastdbf.Table("input.dbf").open("r") as table:
-    df = pd.DataFrame(list(table))
-    df["NAME"] = df["NAME"].str.upper()
+with fastdbf.Table("output.dbf", field_specs="NAME C(20); AGE N(10,0); BIRTH D; CREATED T") as table:
+    for _, row in df.iterrows():
+        table.append(row.to_dict())   # pandas.Timestamp, numpy types accepted natively
+```
 
-    field_specs = []
-    for field in table.fields():
-        code = field["type_code"]
-        nullable = " null" if field["nullable"] else ""
-        if code == "C":
-            field_specs.append(f'{field["name"]} C({field["length"]}){nullable}')
-        elif code in ("N", "F"):
-            field_specs.append(
-                f'{field["name"]} {code}({field["length"]},{field["decimals"]}){nullable}'
-            )
-        else:
-            field_specs.append(f'{field["name"]} {code}{nullable}')
+### The `_deleted` column
 
-dbf_type = "vfp" if any(f["nullable"] for f in table.fields()) else "db3"
-specs = "; ".join(field_specs)
+All read methods expose a `_deleted: bool` column. This reflects the **DBF soft-delete flag** — a standard DBF concept where records are logically marked as deleted (with a `*` marker byte) but remain physically in the file until a `PACK` operation removes them.
 
-with fastdbf.Table("output.dbf", specs, dbf_type=dbf_type) as out:
-    for row in df.to_dict(orient="records"):
-        out.append(row)
+```python
+# Skip deleted records when reading:
+df = df[~df["_deleted"]]
+
+# Mark a record as deleted:
+with table.record(0) as rec:
+    rec.set_deleted(True)
+
+# Physically remove all deleted records:
+table.pack()
 ```
 
 ## Performance & Columnar I/O (Arrow)
@@ -173,7 +239,7 @@ import pyarrow as pa
 
 with fastdbf.Table("data.dbf").open("r") as table:
     # Arrow Batch -> Pandas DataFrame
-    df = pa.Table.from_batches([pa.record_batch(table.to_arrow())]).to_pandas()
+    df = pa.record_batch(table.to_arrow()).to_pandas()
 ```
 
 **Write from Pandas via Arrow:**
@@ -206,8 +272,7 @@ with fastdbf.Table("data.dbf").open("r") as table:
 import pandas as pd
 import fastdbf
 
-# Assuming df ist das Pandas DataFrame
-# Optionale interne Meta-Spalten wie '_deleted' entfernen
+# Drop internal meta-columns like '_deleted' if present
 clean_data = {col: df[col].tolist() for col in df.columns if col != "_deleted"}
 
 with fastdbf.Table("output.dbf", field_specs="NAME C(20); AGE N(10,2)") as table:
