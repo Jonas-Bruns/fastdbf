@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.2
+
+- **Fix**: Support for whole-number floats in `Integer` (I) and `Currency` (Y) fields. This prevents `TypeError` when Pandas converts integer columns to float due to the presence of `NaN`s.
+
 ## 0.5.1
 
 - **Fix**: Support for `NaN` (float) and Pandas `NA` values in Character and Memo fields. These values are now correctly treated as `Null` instead of raising a `PyTypeError`.

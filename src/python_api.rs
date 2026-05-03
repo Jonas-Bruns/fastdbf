@@ -1260,6 +1260,9 @@ fn fastdbf(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         module.py().get_type::<UnsupportedDbfTypeError>(),
     )?;
 
+    module.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    module.add("__author__", "Jonas Bruns")?;
+
     // Legacy string constants.
     module.add("CLOSED", CLOSED)?;
     module.add("READ_ONLY", READ_ONLY)?;
@@ -1416,9 +1419,23 @@ fn py_to_value_with_encoding(
         crate::header::FieldType::Numeric | crate::header::FieldType::Float => {
             Ok(Value::Numeric(value.extract::<f64>()?))
         }
-        crate::header::FieldType::Integer => Ok(Value::Integer(value.extract::<i32>()?)),
+        crate::header::FieldType::Integer => {
+            if let Ok(i) = value.extract::<i32>() {
+                Ok(Value::Integer(i))
+            } else {
+                let f = value.extract::<f64>()?;
+                Ok(Value::Integer(f as i32))
+            }
+        }
         crate::header::FieldType::Double => Ok(Value::Double(value.extract::<f64>()?)),
-        crate::header::FieldType::Currency => Ok(Value::Currency(value.extract::<i64>()?)),
+        crate::header::FieldType::Currency => {
+            if let Ok(i) = value.extract::<i64>() {
+                Ok(Value::Currency(i))
+            } else {
+                let f = value.extract::<f64>()?;
+                Ok(Value::Currency(f as i64))
+            }
+        }
         crate::header::FieldType::Memo => {
             if let Ok(text) = value.extract::<String>() {
                 if let Some(enc) = encoding {
