@@ -1367,7 +1367,7 @@ fn py_to_value_with_encoding(
         return Ok(Value::Null);
     }
 
-    // Handle NaN (float('nan')) as Null. 
+    // Handle NaN (float('nan')) as Null.
     // This is common in Pandas DataFrames even for string/object columns.
     if let Ok(f) = value.extract::<f64>() {
         if f.is_nan() {
