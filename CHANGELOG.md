@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0
+
+- **Feature**: Native type mapping for Pandas/Arrow integration.
+  - `Date` (D) fields now return `datetime.date` objects instead of strings.
+  - `DateTime` (T) fields now return `datetime.datetime` objects instead of ISO strings.
+  - `Numeric(N, 0)` fields (integer-like) are now mapped to Arrow `Int64` / Python `int` instead of `Float64` / `float`. This fixes the common issue of nullable integers being silently cast to `float` in Pandas.
+- **Feature**: `to_arrow()` now emits correct Arrow types (`Date32`, `Timestamp(ms)`, `Int64`) for seamless `.to_pandas()` interoperability — no manual dtype-casting needed.
+- **Feature**: `extend_arrow()` accepts incoming `Date32`, `Timestamp` and `Int64` columns and converts them back to DBF values reliably.
+- **Feature**: `append(dict)` is now **case-insensitive** — keys like `"name"`, `"NAME"`, or `"Name"` all map to the same DBF field.
+- **Feature**: `append()` natively accepts `datetime.date`, `datetime.datetime`, `pandas.Timestamp`, and `numpy` integer/float types without manual casting.
+
 ## 0.4.4
 
 - Fix: Resolved TOML syntax error in `pyproject.toml` regarding dependencies location.

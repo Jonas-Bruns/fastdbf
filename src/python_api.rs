@@ -7,6 +7,7 @@ use crate::header::FieldDescriptor;
 use crate::record::Record;
 use crate::table::{Table, CLOSED, IN_MEMORY, ON_DISK, READ_ONLY, READ_WRITE};
 use crate::value::{Date, DateTime, Value};
+use chrono::{Datelike, Timelike};
 use pyo3_arrow::PyRecordBatch;
 use std::sync::Arc;
 
@@ -115,6 +116,7 @@ impl PyRecord {
                 py,
                 &self.record.values()[real_index as usize],
                 self.encoding,
+                Some(self.fields[real_index as usize].decimals),
             )
         } else {
             let name = key.extract::<String>()?;
@@ -125,7 +127,12 @@ impl PyRecord {
                 .enumerate()
                 .find(|(_, f)| f.name == normalized)
                 .ok_or_else(|| PyKeyError::new_err(format!("field not found: {normalized}")))?;
-            value_to_py(py, &self.record.values()[idx], self.encoding)
+            value_to_py(
+                py,
+                &self.record.values()[idx],
+                self.encoding,
+                Some(self.fields[idx].decimals),
+            )
         }
     }
 
@@ -166,7 +173,8 @@ impl PyRecord {
             .record
             .values()
             .iter()
-            .map(|v| value_to_py(py, v, self.encoding))
+            .enumerate()
+            .map(|(i, v)| value_to_py(py, v, self.encoding, Some(self.fields[i].decimals)))
             .collect::<PyResult<_>>()?;
         Ok(PyList::new(py, items)?.call_method0("__iter__")?.unbind())
     }
@@ -181,7 +189,12 @@ impl PyRecord {
             .enumerate()
             .find(|(_, f)| f.name == upper)
         {
-            return value_to_py(py, &self.record.values()[idx], self.encoding);
+            return value_to_py(
+                py,
+                &self.record.values()[idx],
+                self.encoding,
+                Some(self.fields[idx].decimals),
+            );
         }
         // Fall back to normal attribute lookup.
         Err(pyo3::exceptions::PyAttributeError::new_err(format!(
@@ -256,7 +269,8 @@ impl PyRecord {
         self.record
             .values()
             .iter()
-            .map(|v| value_to_py(py, v, self.encoding))
+            .enumerate()
+            .map(|(i, v)| value_to_py(py, v, self.encoding, Some(self.fields[i].decimals)))
             .collect()
     }
 
@@ -264,7 +278,12 @@ impl PyRecord {
         self.fields
             .iter()
             .zip(self.record.values())
-            .map(|(f, v)| Ok((f.name.clone(), value_to_py(py, v, self.encoding)?)))
+            .map(|(f, v)| {
+                Ok((
+                    f.name.clone(),
+                    value_to_py(py, v, self.encoding, Some(f.decimals))?,
+                ))
+            })
             .collect()
     }
 
@@ -468,7 +487,12 @@ impl PyTable {
         for (i, field) in fields.iter().enumerate() {
             let mut col_values = Vec::with_capacity(records.len());
             for record in records {
-                col_values.push(value_to_py(py, &record.values()[i], self.encoding)?);
+                col_values.push(value_to_py(
+                    py,
+                    &record.values()[i],
+                    self.encoding,
+                    Some(field.decimals),
+                )?);
             }
             let list = PyList::new(py, col_values)?;
             dict.set_item(field.name.as_str(), list)?;
@@ -564,14 +588,20 @@ impl PyTable {
             use crate::header::FieldType;
             let dt = match field.field_type {
                 FieldType::Character => arrow::datatypes::DataType::Utf8,
+                FieldType::Numeric | FieldType::Float if field.decimals == 0 => {
+                    arrow::datatypes::DataType::Int64
+                }
                 FieldType::Numeric | FieldType::Float | FieldType::Double | FieldType::Currency => {
                     arrow::datatypes::DataType::Float64
                 }
                 FieldType::Logical => arrow::datatypes::DataType::Boolean,
                 FieldType::Integer => arrow::datatypes::DataType::Int32,
-                FieldType::Date | FieldType::DateTime | FieldType::Memo => {
-                    arrow::datatypes::DataType::Utf8
-                }
+                FieldType::Date => arrow::datatypes::DataType::Date32,
+                FieldType::DateTime => arrow::datatypes::DataType::Timestamp(
+                    arrow::datatypes::TimeUnit::Millisecond,
+                    None,
+                ),
+                FieldType::Memo => arrow::datatypes::DataType::Utf8,
                 FieldType::General | FieldType::Picture => arrow::datatypes::DataType::Binary,
                 FieldType::NullFlags => continue,
             };
@@ -582,30 +612,25 @@ impl PyTable {
                 true,
             ));
 
-            let array: arrow::array::ArrayRef = match field.field_type {
-                FieldType::Character | FieldType::Memo => {
-                    let mut builder = arrow::array::StringBuilder::with_capacity(
-                        records.len(),
-                        records.len() * 10,
-                    );
+            let array: arrow::array::ArrayRef = if field.field_type == FieldType::Numeric
+                || field.field_type == FieldType::Float
+            {
+                if field.decimals == 0 {
+                    let mut builder = arrow::array::Int64Builder::with_capacity(records.len());
                     for record in records {
                         match &record.values()[col_idx] {
-                            Value::Character(s) => builder.append_value(s),
-                            Value::Memo(bytes) => {
-                                let text = crate::codepage::decode_bytes(bytes, self.encoding);
-                                builder.append_value(text);
-                            }
+                            Value::Numeric(n) => builder.append_value(*n as i64),
+                            Value::Integer(i) => builder.append_value(*i as i64),
                             Value::Null => builder.append_null(),
                             _ => builder.append_null(),
                         }
                     }
                     Arc::new(builder.finish())
-                }
-                FieldType::Numeric | FieldType::Float | FieldType::Double => {
+                } else {
                     let mut builder = arrow::array::Float64Builder::with_capacity(records.len());
                     for record in records {
                         match &record.values()[col_idx] {
-                            Value::Numeric(n) | Value::Double(n) => builder.append_value(*n),
+                            Value::Numeric(n) => builder.append_value(*n),
                             Value::Integer(i) => builder.append_value(*i as f64),
                             Value::Null => builder.append_null(),
                             _ => builder.append_null(),
@@ -613,82 +638,125 @@ impl PyTable {
                     }
                     Arc::new(builder.finish())
                 }
-                FieldType::Currency => {
-                    let mut builder = arrow::array::Float64Builder::with_capacity(records.len());
-                    for record in records {
-                        match &record.values()[col_idx] {
-                            Value::Currency(n) => builder.append_value(*n as f64),
-                            Value::Null => builder.append_null(),
-                            _ => builder.append_null(),
+            } else {
+                match field.field_type {
+                    FieldType::Character | FieldType::Memo => {
+                        let mut builder = arrow::array::StringBuilder::with_capacity(
+                            records.len(),
+                            records.len() * 10,
+                        );
+                        for record in records {
+                            match &record.values()[col_idx] {
+                                Value::Character(s) => builder.append_value(s),
+                                Value::Memo(bytes) => {
+                                    let text = crate::codepage::decode_bytes(bytes, self.encoding);
+                                    builder.append_value(text);
+                                }
+                                Value::Null => builder.append_null(),
+                                _ => builder.append_null(),
+                            }
                         }
+                        Arc::new(builder.finish())
                     }
-                    Arc::new(builder.finish())
-                }
-                FieldType::Logical => {
-                    let mut builder = arrow::array::BooleanBuilder::with_capacity(records.len());
-                    for record in records {
-                        match &record.values()[col_idx] {
-                            Value::Logical(Some(b)) => builder.append_value(*b),
-                            Value::Logical(None) | Value::Null => builder.append_null(),
-                            _ => builder.append_null(),
+                    FieldType::Double => {
+                        let mut builder =
+                            arrow::array::Float64Builder::with_capacity(records.len());
+                        for record in records {
+                            match &record.values()[col_idx] {
+                                Value::Double(n) => builder.append_value(*n),
+                                Value::Integer(i) => builder.append_value(*i as f64),
+                                Value::Null => builder.append_null(),
+                                _ => builder.append_null(),
+                            }
                         }
+                        Arc::new(builder.finish())
                     }
-                    Arc::new(builder.finish())
-                }
-                FieldType::Integer => {
-                    let mut builder = arrow::array::Int32Builder::with_capacity(records.len());
-                    for record in records {
-                        match &record.values()[col_idx] {
-                            Value::Integer(i) => builder.append_value(*i),
-                            Value::Null => builder.append_null(),
-                            _ => builder.append_null(),
+                    FieldType::Currency => {
+                        let mut builder =
+                            arrow::array::Float64Builder::with_capacity(records.len());
+                        for record in records {
+                            match &record.values()[col_idx] {
+                                Value::Currency(n) => builder.append_value(*n as f64),
+                                Value::Null => builder.append_null(),
+                                _ => builder.append_null(),
+                            }
                         }
+                        Arc::new(builder.finish())
                     }
-                    Arc::new(builder.finish())
-                }
-                FieldType::Date => {
-                    let mut builder = arrow::array::StringBuilder::with_capacity(
-                        records.len(),
-                        records.len() * 10,
-                    );
-                    for record in records {
-                        match &record.values()[col_idx] {
-                            Value::Date(Some(d)) => builder.append_value(date_to_iso(*d)),
-                            Value::Date(None) | Value::Null => builder.append_null(),
-                            _ => builder.append_null(),
+                    FieldType::Logical => {
+                        let mut builder =
+                            arrow::array::BooleanBuilder::with_capacity(records.len());
+                        for record in records {
+                            match &record.values()[col_idx] {
+                                Value::Logical(Some(b)) => builder.append_value(*b),
+                                Value::Logical(None) | Value::Null => builder.append_null(),
+                                _ => builder.append_null(),
+                            }
                         }
+                        Arc::new(builder.finish())
                     }
-                    Arc::new(builder.finish())
-                }
-                FieldType::DateTime => {
-                    let mut builder = arrow::array::StringBuilder::with_capacity(
-                        records.len(),
-                        records.len() * 20,
-                    );
-                    for record in records {
-                        match &record.values()[col_idx] {
-                            Value::DateTime(Some(d)) => builder.append_value(datetime_to_iso(*d)),
-                            Value::DateTime(None) | Value::Null => builder.append_null(),
-                            _ => builder.append_null(),
+                    FieldType::Integer => {
+                        let mut builder = arrow::array::Int32Builder::with_capacity(records.len());
+                        for record in records {
+                            match &record.values()[col_idx] {
+                                Value::Integer(i) => builder.append_value(*i),
+                                Value::Null => builder.append_null(),
+                                _ => builder.append_null(),
+                            }
                         }
+                        Arc::new(builder.finish())
                     }
-                    Arc::new(builder.finish())
-                }
-                FieldType::General | FieldType::Picture => {
-                    let mut builder = arrow::array::BinaryBuilder::with_capacity(
-                        records.len(),
-                        records.len() * 10,
-                    );
-                    for record in records {
-                        match &record.values()[col_idx] {
-                            Value::Binary(bytes) => builder.append_value(bytes),
-                            Value::Null => builder.append_null(),
-                            _ => builder.append_null(),
+                    FieldType::Date => {
+                        let mut builder = arrow::array::Date32Builder::with_capacity(records.len());
+                        for record in records {
+                            match &record.values()[col_idx] {
+                                Value::Date(Some(d)) => {
+                                    let days = gregorian_to_julian_day(
+                                        d.year as i32,
+                                        d.month as i32,
+                                        d.day as i32,
+                                    ) - 2440588;
+                                    builder.append_value(days);
+                                }
+                                Value::Date(None) | Value::Null => builder.append_null(),
+                                _ => builder.append_null(),
+                            }
                         }
+                        Arc::new(builder.finish())
                     }
-                    Arc::new(builder.finish())
+                    FieldType::DateTime => {
+                        let mut builder =
+                            arrow::array::TimestampMillisecondBuilder::with_capacity(records.len());
+                        for record in records {
+                            match &record.values()[col_idx] {
+                                Value::DateTime(Some(d)) => {
+                                    let days_since_epoch = d.julian_day - 2440588;
+                                    let millis = days_since_epoch as i64 * 86_400_000
+                                        + d.millis_since_midnight as i64;
+                                    builder.append_value(millis);
+                                }
+                                Value::DateTime(None) | Value::Null => builder.append_null(),
+                                _ => builder.append_null(),
+                            }
+                        }
+                        Arc::new(builder.finish())
+                    }
+                    FieldType::General | FieldType::Picture => {
+                        let mut builder = arrow::array::BinaryBuilder::with_capacity(
+                            records.len(),
+                            records.len() * 10,
+                        );
+                        for record in records {
+                            match &record.values()[col_idx] {
+                                Value::Binary(bytes) => builder.append_value(bytes),
+                                Value::Null => builder.append_null(),
+                                _ => builder.append_null(),
+                            }
+                        }
+                        Arc::new(builder.finish())
+                    }
+                    FieldType::Numeric | FieldType::Float | FieldType::NullFlags => unreachable!(),
                 }
-                FieldType::NullFlags => unreachable!(),
             };
             arrow_arrays.push(array);
         }
@@ -726,14 +794,20 @@ impl PyTable {
             use crate::header::FieldType;
             let target_dt = match field.field_type {
                 FieldType::Character => arrow::datatypes::DataType::Utf8,
+                FieldType::Numeric | FieldType::Float if field.decimals == 0 => {
+                    arrow::datatypes::DataType::Int64
+                }
                 FieldType::Numeric | FieldType::Float | FieldType::Double | FieldType::Currency => {
                     arrow::datatypes::DataType::Float64
                 }
                 FieldType::Logical => arrow::datatypes::DataType::Boolean,
                 FieldType::Integer => arrow::datatypes::DataType::Int32,
-                FieldType::Date | FieldType::DateTime | FieldType::Memo => {
-                    arrow::datatypes::DataType::Utf8
-                }
+                FieldType::Date => arrow::datatypes::DataType::Date32,
+                FieldType::DateTime => arrow::datatypes::DataType::Timestamp(
+                    arrow::datatypes::TimeUnit::Millisecond,
+                    None,
+                ),
+                FieldType::Memo => arrow::datatypes::DataType::Utf8,
                 FieldType::General | FieldType::Picture => arrow::datatypes::DataType::Binary,
                 FieldType::NullFlags => continue,
             };
@@ -787,6 +861,10 @@ impl PyTable {
                             let array = col.as_any().downcast_ref::<StringArray>().unwrap();
                             Value::Character(array.value(row_idx).to_string())
                         }
+                        FieldType::Numeric | FieldType::Float if field.decimals == 0 => {
+                            let array = col.as_any().downcast_ref::<Int64Array>().unwrap();
+                            Value::Numeric(array.value(row_idx) as f64)
+                        }
                         FieldType::Numeric | FieldType::Float => {
                             let array = col.as_any().downcast_ref::<Float64Array>().unwrap();
                             Value::Numeric(array.value(row_idx))
@@ -808,31 +886,47 @@ impl PyTable {
                             Value::Integer(array.value(row_idx))
                         }
                         FieldType::Date => {
-                            let array = col.as_any().downcast_ref::<StringArray>().unwrap();
-                            let s = array.value(row_idx);
-                            match crate::value::Date::parse_ymd(&s.replace("-", "")) {
-                                Ok(Some(d)) => Value::Date(Some(d)),
-                                _ => Value::Null,
+                            if let Some(array) = col.as_any().downcast_ref::<Date32Array>() {
+                                let days = array.value(row_idx);
+                                let (y, m, d) = julian_day_to_ymd(days + 2440588).unwrap();
+                                Value::Date(Some(Date::new(y as u16, m as u8, d as u8)))
+                            } else {
+                                let array = col.as_any().downcast_ref::<StringArray>().unwrap();
+                                let s = array.value(row_idx);
+                                match crate::value::Date::parse_ymd(&s.replace("-", "")) {
+                                    Ok(Some(d)) => Value::Date(Some(d)),
+                                    _ => Value::Null,
+                                }
                             }
                         }
                         FieldType::DateTime => {
-                            let array = col.as_any().downcast_ref::<StringArray>().unwrap();
-                            let s = array.value(row_idx);
-                            let parts = s.split('T').collect::<Vec<_>>();
-                            if parts.len() == 2 {
-                                let date_str = parts[0].replace("-", "");
-                                let time_str = parts[1];
-                                if let Ok(Some(date)) = crate::value::Date::parse_ymd(&date_str) {
-                                    if let Ok(dt) = iso_datetime_parts_to_vfp(date, time_str) {
-                                        Value::DateTime(Some(dt))
+                            if let Some(array) =
+                                col.as_any().downcast_ref::<TimestampMillisecondArray>()
+                            {
+                                let millis = array.value(row_idx);
+                                let days = (millis / 86_400_000) as i32;
+                                let ms = (millis % 86_400_000) as i32;
+                                Value::DateTime(Some(DateTime::new(days + 2440588, ms)))
+                            } else {
+                                let array = col.as_any().downcast_ref::<StringArray>().unwrap();
+                                let s = array.value(row_idx);
+                                let parts = s.split('T').collect::<Vec<_>>();
+                                if parts.len() == 2 {
+                                    let date_str = parts[0].replace("-", "");
+                                    let time_str = parts[1];
+                                    if let Ok(Some(date)) = crate::value::Date::parse_ymd(&date_str)
+                                    {
+                                        if let Ok(dt) = iso_datetime_parts_to_vfp(date, time_str) {
+                                            Value::DateTime(Some(dt))
+                                        } else {
+                                            Value::Null
+                                        }
                                     } else {
                                         Value::Null
                                     }
                                 } else {
                                     Value::Null
                                 }
-                            } else {
-                                Value::Null
                             }
                         }
                         FieldType::General | FieldType::Picture => {
@@ -910,13 +1004,20 @@ impl PyTable {
         self.require_read_write()?;
         let mut record = self.inner.new_record();
         if let Ok(dict) = row.downcast::<PyDict>() {
-            for field in self.inner.fields() {
-                if let Some(value) = dict.get_item(field.name.as_str())? {
-                    let converted =
-                        py_to_value_with_encoding(value.as_any(), field, self.encoding)?;
-                    record
-                        .insert(self.inner.fields(), &field.name, converted)
-                        .map_err(to_py_error)?;
+            for (k, v) in dict.iter() {
+                if let Ok(key_str) = k.extract::<String>() {
+                    let normalized_key = key_str.trim().to_ascii_uppercase();
+                    if let Some((idx, field)) = self
+                        .inner
+                        .fields()
+                        .iter()
+                        .enumerate()
+                        .find(|(_, f)| f.name == normalized_key)
+                    {
+                        let converted =
+                            py_to_value_with_encoding(v.as_any(), field, self.encoding)?;
+                        record.values_mut()[idx] = converted;
+                    }
                 }
             }
         } else if let Ok(sequence) = row.extract::<Vec<PyObject>>() {
@@ -1193,7 +1294,10 @@ fn record_to_dict<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     let dict = PyDict::new(py);
     for (field, value) in fields.iter().zip(record.values()) {
-        dict.set_item(field.name.as_str(), value_to_py(py, value, encoding)?)?;
+        dict.set_item(
+            field.name.as_str(),
+            value_to_py(py, value, encoding, Some(field.decimals))?,
+        )?;
     }
     dict.set_item("_deleted", record.is_deleted())?;
     Ok(dict)
@@ -1203,18 +1307,45 @@ fn value_to_py(
     py: Python<'_>,
     value: &Value,
     encoding: Option<&'static encoding_rs::Encoding>,
+    decimals: Option<u8>,
 ) -> PyResult<PyObject> {
     match value {
         Value::Null => Ok(py.None()),
         Value::Character(text) => Ok(text.into_pyobject(py)?.unbind().into()),
-        Value::Numeric(number) => Ok(number.into_pyobject(py)?.unbind().into()),
+        Value::Numeric(number) => {
+            if decimals == Some(0) {
+                Ok((*number as i64).into_pyobject(py)?.unbind().into())
+            } else {
+                Ok(number.into_pyobject(py)?.unbind().into())
+            }
+        }
         Value::Logical(value) => Ok(value.into_pyobject(py)?.unbind()),
-        Value::Date(Some(date)) => Ok(date_to_iso(*date).into_pyobject(py)?.unbind().into()),
+        Value::Date(Some(date)) => {
+            let chrono_date = chrono::NaiveDate::from_ymd_opt(
+                date.year as i32,
+                date.month as u32,
+                date.day as u32,
+            )
+            .ok_or_else(|| PyValueError::new_err("invalid date"))?;
+            Ok(chrono_date.into_pyobject(py)?.unbind())
+        }
         Value::Date(None) => Ok(py.None()),
         Value::Integer(number) => Ok(number.into_pyobject(py)?.unbind().into()),
         Value::Double(number) => Ok(number.into_pyobject(py)?.unbind().into()),
         Value::DateTime(Some(value)) => {
-            Ok(datetime_to_iso(*value).into_pyobject(py)?.unbind().into())
+            if let Some((year, month, day)) = julian_day_to_ymd(value.julian_day) {
+                let total_millis = value.millis_since_midnight.max(0) as u32;
+                let hour = total_millis / 3_600_000;
+                let minute = (total_millis % 3_600_000) / 60_000;
+                let second = (total_millis % 60_000) / 1_000;
+                let millis = total_millis % 1_000;
+                let chrono_dt = chrono::NaiveDate::from_ymd_opt(year, month, day)
+                    .and_then(|d| d.and_hms_milli_opt(hour, minute, second, millis))
+                    .ok_or_else(|| PyValueError::new_err("invalid datetime"))?;
+                Ok(chrono_dt.into_pyobject(py)?.unbind())
+            } else {
+                Ok(datetime_to_iso(*value).into_pyobject(py)?.unbind().into())
+            }
         }
         Value::DateTime(None) => Ok(py.None()),
         Value::Currency(number) => Ok(number.into_pyobject(py)?.unbind().into()),
@@ -1258,11 +1389,19 @@ fn py_to_value_with_encoding(
             }
         }
         crate::header::FieldType::Date => {
-            let raw = value.extract::<String>()?;
-            let normalized = raw.replace('-', "");
-            Ok(Value::Date(
-                Date::parse_ymd(&normalized).map_err(to_py_error)?,
-            ))
+            if let Ok(dt) = value.extract::<chrono::NaiveDate>() {
+                Ok(Value::Date(Some(Date::new(
+                    dt.year() as u16,
+                    dt.month() as u8,
+                    dt.day() as u8,
+                ))))
+            } else {
+                let raw = value.extract::<String>()?;
+                let normalized = raw.replace('-', "");
+                Ok(Value::Date(
+                    Date::parse_ymd(&normalized).map_err(to_py_error)?,
+                ))
+            }
         }
         crate::header::FieldType::Logical => Ok(Value::Logical(Some(value.extract::<bool>()?))),
         crate::header::FieldType::Numeric | crate::header::FieldType::Float => {
@@ -1296,15 +1435,27 @@ fn py_to_value_with_encoding(
             "internal null-flag field cannot be assigned from Python",
         )),
         crate::header::FieldType::DateTime => {
-            let raw = value.extract::<String>()?;
-            let (date_part, time_part) = raw.split_once('T').ok_or_else(|| {
-                PyValueError::new_err("datetime must be ISO-like, e.g. 2024-01-31T12:34:56.000")
-            })?;
-            let date = Date::parse_ymd(&date_part.replace('-', ""))
-                .map_err(to_py_error)?
-                .ok_or_else(|| PyValueError::new_err("datetime date part cannot be empty"))?;
-            let datetime = iso_datetime_parts_to_vfp(date, time_part)?;
-            Ok(Value::DateTime(Some(datetime)))
+            if let Ok(dt) = value.extract::<chrono::NaiveDateTime>() {
+                let date = Date::new(dt.year() as u16, dt.month() as u8, dt.day() as u8);
+                let total_millis = dt.hour() * 3_600_000
+                    + dt.minute() * 60_000
+                    + dt.second() * 1_000
+                    + dt.nanosecond() / 1_000_000;
+                Ok(Value::DateTime(Some(DateTime::new(
+                    gregorian_to_julian_day(date.year as i32, date.month as i32, date.day as i32),
+                    total_millis as i32,
+                ))))
+            } else {
+                let raw = value.extract::<String>()?;
+                let (date_part, time_part) = raw.split_once('T').ok_or_else(|| {
+                    PyValueError::new_err("datetime must be ISO-like, e.g. 2024-01-31T12:34:56.000")
+                })?;
+                let date = Date::parse_ymd(&date_part.replace('-', ""))
+                    .map_err(to_py_error)?
+                    .ok_or_else(|| PyValueError::new_err("datetime date part cannot be empty"))?;
+                let datetime = iso_datetime_parts_to_vfp(date, time_part)?;
+                Ok(Value::DateTime(Some(datetime)))
+            }
         }
     }
 }
@@ -1383,10 +1534,6 @@ fn field_spec_string(info: &FieldDescriptor) -> String {
             }
         }
     }
-}
-
-fn date_to_iso(date: Date) -> String {
-    format!("{:04}-{:02}-{:02}", date.year, date.month, date.day)
 }
 
 fn datetime_to_iso(datetime: DateTime) -> String {
