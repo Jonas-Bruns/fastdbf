@@ -56,3 +56,26 @@ def test_pandas_string_dtype_na(tmp_path):
     with fastdbf.Table(dbf_path).open("r") as table:
         records = list(table)
         assert records[1]["TEXT"] is None
+
+
+def test_float_to_int_conversion(tmp_path):
+    dbf_path = str(tmp_path / "test_float_int.dbf")
+
+    # DataFrame where an integer column becomes float due to a single NaN
+    df = pd.DataFrame(
+        {
+            "ID": [1.0, 2.0, np.nan]  # These are floats!
+        }
+    )
+
+    specs = "ID I null"
+
+    with fastdbf.Table(dbf_path, specs, dbf_type="vfp") as table:
+        for _, row in df.iterrows():
+            table.append(row.to_dict())
+
+    with fastdbf.Table(dbf_path).open("r") as table:
+        records = list(table)
+        assert records[0]["ID"] == 1
+        assert records[1]["ID"] == 2
+        assert records[2]["ID"] is None
