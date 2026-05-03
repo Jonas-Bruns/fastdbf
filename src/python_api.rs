@@ -7,8 +7,8 @@ use crate::header::FieldDescriptor;
 use crate::record::Record;
 use crate::table::{Table, CLOSED, IN_MEMORY, ON_DISK, READ_ONLY, READ_WRITE};
 use crate::value::{Date, DateTime, Value};
-use pyo3_arrow::PyRecordBatch;
 use chrono::{Datelike, Timelike};
+use pyo3_arrow::PyRecordBatch;
 use std::sync::Arc;
 
 pyo3::create_exception!(fastdbf, FastDbfError, pyo3::exceptions::PyException);
@@ -127,7 +127,12 @@ impl PyRecord {
                 .enumerate()
                 .find(|(_, f)| f.name == normalized)
                 .ok_or_else(|| PyKeyError::new_err(format!("field not found: {normalized}")))?;
-            value_to_py(py, &self.record.values()[idx], self.encoding, Some(self.fields[idx].decimals))
+            value_to_py(
+                py,
+                &self.record.values()[idx],
+                self.encoding,
+                Some(self.fields[idx].decimals),
+            )
         }
     }
 
@@ -184,7 +189,12 @@ impl PyRecord {
             .enumerate()
             .find(|(_, f)| f.name == upper)
         {
-            return value_to_py(py, &self.record.values()[idx], self.encoding, Some(self.fields[idx].decimals));
+            return value_to_py(
+                py,
+                &self.record.values()[idx],
+                self.encoding,
+                Some(self.fields[idx].decimals),
+            );
         }
         // Fall back to normal attribute lookup.
         Err(pyo3::exceptions::PyAttributeError::new_err(format!(
@@ -268,7 +278,12 @@ impl PyRecord {
         self.fields
             .iter()
             .zip(self.record.values())
-            .map(|(f, v)| Ok((f.name.clone(), value_to_py(py, v, self.encoding, Some(f.decimals))?)))
+            .map(|(f, v)| {
+                Ok((
+                    f.name.clone(),
+                    value_to_py(py, v, self.encoding, Some(f.decimals))?,
+                ))
+            })
             .collect()
     }
 
@@ -472,7 +487,12 @@ impl PyTable {
         for (i, field) in fields.iter().enumerate() {
             let mut col_values = Vec::with_capacity(records.len());
             for record in records {
-                col_values.push(value_to_py(py, &record.values()[i], self.encoding, Some(field.decimals))?);
+                col_values.push(value_to_py(
+                    py,
+                    &record.values()[i],
+                    self.encoding,
+                    Some(field.decimals),
+                )?);
             }
             let list = PyList::new(py, col_values)?;
             dict.set_item(field.name.as_str(), list)?;
@@ -639,7 +659,8 @@ impl PyTable {
                         Arc::new(builder.finish())
                     }
                     FieldType::Double => {
-                        let mut builder = arrow::array::Float64Builder::with_capacity(records.len());
+                        let mut builder =
+                            arrow::array::Float64Builder::with_capacity(records.len());
                         for record in records {
                             match &record.values()[col_idx] {
                                 Value::Double(n) => builder.append_value(*n),
@@ -651,7 +672,8 @@ impl PyTable {
                         Arc::new(builder.finish())
                     }
                     FieldType::Currency => {
-                        let mut builder = arrow::array::Float64Builder::with_capacity(records.len());
+                        let mut builder =
+                            arrow::array::Float64Builder::with_capacity(records.len());
                         for record in records {
                             match &record.values()[col_idx] {
                                 Value::Currency(n) => builder.append_value(*n as f64),
@@ -662,7 +684,8 @@ impl PyTable {
                         Arc::new(builder.finish())
                     }
                     FieldType::Logical => {
-                        let mut builder = arrow::array::BooleanBuilder::with_capacity(records.len());
+                        let mut builder =
+                            arrow::array::BooleanBuilder::with_capacity(records.len());
                         for record in records {
                             match &record.values()[col_idx] {
                                 Value::Logical(Some(b)) => builder.append_value(*b),
@@ -877,9 +900,8 @@ impl PyTable {
                             }
                         }
                         FieldType::DateTime => {
-                            if let Some(array) = col
-                                .as_any()
-                                .downcast_ref::<TimestampMillisecondArray>()
+                            if let Some(array) =
+                                col.as_any().downcast_ref::<TimestampMillisecondArray>()
                             {
                                 let millis = array.value(row_idx);
                                 let days = (millis / 86_400_000) as i32;
@@ -1414,11 +1436,7 @@ fn py_to_value_with_encoding(
         )),
         crate::header::FieldType::DateTime => {
             if let Ok(dt) = value.extract::<chrono::NaiveDateTime>() {
-                let date = Date::new(
-                    dt.year() as u16,
-                    dt.month() as u8,
-                    dt.day() as u8,
-                );
+                let date = Date::new(dt.year() as u16, dt.month() as u8, dt.day() as u8);
                 let total_millis = dt.hour() * 3_600_000
                     + dt.minute() * 60_000
                     + dt.second() * 1_000
